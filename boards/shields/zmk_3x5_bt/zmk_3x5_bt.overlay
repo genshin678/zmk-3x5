@@ -59,22 +59,24 @@
 / {
     /* Custom pinctrl for SPI3: only MOSI (P1.04 = D8) is used by WS2812B.
      * SCK / MISO / CS are not connected but the SPI peripheral still
-     * wants them initialised to a valid (low-power) state. */
-    pinctrl: pinctrl {
-        spi3_ws2812_default: spi3_ws2812_default {
-            group1 {
-                /* P1.04 = D8, SPIM3.MOSI function. PSEL encoding:
-                 *   bits 0-4 = pin, bits 5-7 = port, bits 8-12 = function.
-                 *   0x224 = (2<<8) | (1<<5) | 4 = MOSI, port 1, pin 4. */
-                psels = <0x224>;
-            };
-            group2 {
-                /* SCK P0.26, MISO P0.27, CSN P0.12 — chosen as harmless
-                 * low-power defaults; the WS2812B driver only toggles MOSI. */
-                psels = <0x11A>,
-                        <0x31B>,
-                        <0x40C>;
-            };
+     * wants them initialised to a valid (low-power) state.
+     * NOTE: must NOT use the `pinctrl:` label or wrap in a `pinctrl {}`
+     * child node — the nRF52840 SoC already labels its pinctrl-controller
+     * `pinctrl`, which would cause a devicetree label-collision error.
+     * Put the state directly under / and label only the state itself. */
+    spi3_ws2812_default: spi3_ws2812_default {
+        group1 {
+            /* P1.04 = D8, SPIM3.MOSI function. PSEL encoding:
+             *   bits 0-4 = pin, bits 5-7 = port, bits 8-12 = function.
+             *   0x224 = (2<<8) | (1<<5) | 4 = MOSI, port 1, pin 4. */
+            psels = <0x224>;
+        };
+        group2 {
+            /* SCK P0.26, MISO P0.27, CSN P0.12 — chosen as harmless
+             * low-power defaults; the WS2812B driver only toggles MOSI. */
+            psels = <0x11A>,
+                    <0x31B>,
+                    <0x40C>;
         };
     };
 };

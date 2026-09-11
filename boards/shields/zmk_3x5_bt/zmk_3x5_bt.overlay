@@ -4,17 +4,22 @@
  *
  * ZMK 3x5 Bluetooth Keyboard Shield
  * Board: nice!nano / Pro Micro (NRF52840)
- * Matrix: 3 rows x 5 columns, ROW2COL diode orientation (anode→Row, cathode→Col)
+ * Matrix: 3 rows x 5 columns, ROW2COL diode orientation (anode→row, cathode→col)
  * Row pins: D0, D1, D2 (driven outputs)
  * Col pins: D3, D4, D5, D6, D7 (sensed inputs, pulled down)
  * NOTE: PCB column bus is physically mirrored (leftmost key → D7/col4),
  * so the transform map reverses each row to keep keymap order YUIOP/HJKL;/NM,.
  *
- * RGB: WS2812B on D8 (P1.04) via SPI3 bitbang.
- *   P1.04 is SPI3 MOSI on nRF52840.  The worldsemi,ws2812-spi driver
+ * RGB: WS2812B×15 on D8 (P1.04) via SPI3 bitbang.
+ *   P1.04 = SPIM3.MOSI on nRF52840. The worldsemi,ws2812-spi driver
  *   reuses the SPI peripheral and bitbangs the WS2812B timing.
+ *   SCK=P0.26, MISO=P0.27, CSN=P0.12 are initialized as low-power defaults
+ *   (WS2812B is write-only; they are not driven).
+ *
+ * Reference: ZMK docs nRF52 WS2812 example + Kyria/boards/nice_nano_nrf52840_zmk.overlay
  */
 
+#include <dt-bindings/led/led.h>
 #include <dt-bindings/zmk/matrix_transform.h>
 
 / {
@@ -48,50 +53,71 @@
         compatible = "zmk,matrix-transform";
         columns = <5>;
         rows = <3>;
-        map = <
+        map = <(
             RC(0,4) RC(0,3) RC(0,2) RC(0,1) RC(0,0)
             RC(1,4) RC(1,3) RC(1,2) RC(1,1) RC(1,0)
             RC(2,4) RC(2,3) RC(2,2) RC(2,1) RC(2,0)
-        >;
+        )>;
     };
 };
 
 / {
-    /* Custom pinctrl for SPI3: only MOSI (P1.04 = D8) is used by WS2812B.
-     * SCK / MISO / CS are not connected but the SPI peripheral still
-     * wants them initialised to a valid (low-power) state.
-     * NOTE: must NOT use the `pinctrl:` label or wrap in a `pinctrl {}`
-     * child node — the nRF52840 SoC already labels its pinctrl-controller
-     * `pinctrl`, which would cause a devicetree label-collision error.
-     * Put the state directly under / and label only the state itself. */
+    /* Custom pinctrl states for SPI3 WS2812B.
+     * Named spi3_ws2812_default / spi3_ws2812_sleep to avoid colliding
+     * with the nice_nano-pinctrl.dtsi states (spi1_default / spi1_sleep).
+     * These are placed directly under / (not wrapped in a `pinctrl {}` node)
+     * to avoid colliding with the SoC's `pinctrl` label
+     * (nrf_common.dtsi defines `pinctrl: pin-controller`).
+     *
+     * PSEL encoding (Nordic nRF52): bits 0-4=pin, bits 5-7=port, bits 8-12=function.
+     *   MOSI  P1.04 = (2<<8)|(1<<5)|4  = 0x224
+     *   SCK   P0.26 = (2<<8)|(0<<5)|26 = 0x11A
+     *   MISO  P0.27 = (2<<8)|(0<<5)|27 = 0x21B
+     *   CSN   P0.12 = (4<<8)|(0<<5)|12 = 0x40C  (WS2812B is write-only; CSN is dummy)
+     */
     spi3_ws2812_default: spi3_ws2812_default {
         group1 {
-            /* P1.04 = D8, SPIM3.MOSI function. PSEL encoding:
-             *   bits 0-4 = pin, bits 5-7 = port, bits 8-12 = function.
-             *   0x224 = (2<<8) | (1<<5) | 4 = MOSI, port 1, pin 4. */
             psels = <0x224>;
         };
         group2 {
-            /* SCK P0.26, MISO P0.27, CSN P0.12 — chosen as harmless
-             * low-power defaults; the WS2812B driver only toggles MOSI. */
-            psels = <0x11A>,
-                    <0x31B>,
-                    <0x40C>;
+            psels = <0x11A>, <0x21B>, <0x40C>;
+        };
+    };
+
+    spi3_ws2812_sleep: spi3_ws2812_sleep {
+        group1 {
+            psels = <0x224>, <0x11A>, <0x21B>, <0x40C>;
+            low-power-enable;
         };
     };
 };
 
 &spi3 {
+    compatible = "nordic,nrf-spim";
     status = "okay";
+
     pinctrl-0 = <&spi3_ws2812_default>;
-    pinctrl-names = "default";
+    pinctrl-1 = <&spi3_ws2812_sleep>;
+    pinctrl-names = "default", "sleep";
 
     led_strip: ws2812@0 {
         compatible = "worldsemi,ws2812-spi";
-        reg = <0>;
+
+        /* SPI */
+        reg = <0>; /* ignored, required by SPI binding */
         spi-max-frequency = <4000000>;
-        spi-one-wire;
-        chain-length = <15>;
-        color-mapping = "GRB";
+
+        /* WS2812B: one SPI frame = one WS2812 bit.
+         * 1-pulse (T1H≈0.7μs):  0x70 = 0111_0000
+         * 0-pulse (T0L≈0.35μs): 0x40 = 0100_0000
+         * (2 MHz SPI × 0.5 μs/bit ≈ WS2812 800 kHz) */
+        spi-one-frame = <0x70>;
+        spi-zero-frame = <0x40>;
+
+        /* WS2812B */
+        chain-length = <15>; /* 15 LEDs: 5 per row × 3 rows */
+        color-mapping = <LED_COLOR_ID_GREEN
+                         LED_COLOR_ID_RED
+                         LED_COLOR_ID_BLUE>;
     };
 };

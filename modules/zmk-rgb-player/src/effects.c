@@ -6,12 +6,12 @@
  * Effect 4/5/6 = per-pixel effects driven by our k_work_delayable tick.
  *
  * For effect 6 (ripple), the wave origin is rgb_control_get_last_key().
- * Call effects_on_key_down(idx) each time a key is pressed so the ripple
- * knows where to spread from.
+ *
+ * All 7 effects are rendered by this module directly via the WS2812B
+ * driver; none rely on ZMK's built-in rgb_underglow subsystem.
  */
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include <zmk/rgb_underglow.h>
 #include <zmk_rgbeffect/led_pixel.h>
 #include <zmk_rgbeffect/rgb_control.h>
 #include <zmk_rgbeffect/effects.h>
@@ -65,19 +65,38 @@ static void render_off(void) {
     led_pixel_update();
 }
 
-static void render_solid_zmk(void) {
-    stop_tick();
-    zmk_rgb_underglow_effect_set(0);
+static uint8_t breathing_scale(void) {
+    uint32_t t = (tick_count / 16) % 100;
+    uint32_t tri = (t < 50) ? (t * 2) : ((100 - t) * 2); /* 0..100 triangle */
+    return (uint8_t)(20 + (tri * 80) / 100);             /* 20%..100% */
 }
 
-static void render_breathing_zmk(void) {
-    stop_tick();
-    zmk_rgb_underglow_effect_set(1);
+static void render_solid(void) {
+    struct led_rgb c = hsv_to_rgb(rgb_control_get_hue(), 100,
+                                  rgb_control_get_brightness());
+    for (int i = 0; i < LED_PIXEL_COUNT; i++) {
+        led_pixel_set((uint8_t)i, c.r, c.g, c.b);
+    }
+    led_pixel_update();
 }
 
-static void render_rainbow_zmk(void) {
-    stop_tick();
-    zmk_rgb_underglow_effect_set(2);
+static void render_breathing(void) {
+    uint8_t scale = breathing_scale();
+    uint8_t v = (uint8_t)((rgb_control_get_brightness() * scale) / 100);
+    struct led_rgb c = hsv_to_rgb(rgb_control_get_hue(), 100, v);
+    for (int i = 0; i < LED_PIXEL_COUNT; i++) {
+        led_pixel_set((uint8_t)i, c.r, c.g, c.b);
+    }
+    led_pixel_update();
+}
+
+static void render_rainbow(void) {
+    for (int i = 0; i < LED_PIXEL_COUNT; i++) {
+        uint16_t hue = (uint16_t)((tick_count * 3 + i * 24) % 360);
+        struct led_rgb c = hsv_to_rgb(hue, 255, rgb_control_get_brightness());
+        led_pixel_set((uint8_t)i, c.r, c.g, c.b);
+    }
+    led_pixel_update();
 }
 
 static void render_single_key(void) {
@@ -169,9 +188,12 @@ static void render_ripple(void) {
 static void effects_tick(struct k_work *work) {
     tick_count++;
     switch (active) {
-        case RGB_EFFECT_SINGLE_KEY: render_single_key(); break;
-        case RGB_EFFECT_TWINKLE:    render_twinkle();    break;
-        case RGB_EFFECT_RIPPLE:     render_ripple();     break;
+        case RGB_EFFECT_SOLID:       render_solid();      break;
+        case RGB_EFFECT_BREATHING:   render_breathing();  break;
+        case RGB_EFFECT_RAINBOW:     render_rainbow();    break;
+        case RGB_EFFECT_SINGLE_KEY:  render_single_key(); break;
+        case RGB_EFFECT_TWINKLE:     render_twinkle();    break;
+        case RGB_EFFECT_RIPPLE:      render_ripple();     break;
         default: break;
     }
     if (tick_running) {
@@ -198,18 +220,11 @@ void effects_set_active(rgb_effect_t e) {
             render_off();
             break;
         case RGB_EFFECT_SOLID:
-            render_solid_zmk();
-            break;
         case RGB_EFFECT_BREATHING:
-            render_breathing_zmk();
-            break;
         case RGB_EFFECT_RAINBOW:
-            render_rainbow_zmk();
-            break;
         case RGB_EFFECT_SINGLE_KEY:
         case RGB_EFFECT_TWINKLE:
         case RGB_EFFECT_RIPPLE:
-            zmk_rgb_underglow_off();
             start_tick();
             break;
         default: break;
@@ -250,7 +265,6 @@ void effects_set_active_key(int8_t key_index) {
 void effects_player_enter(void) {
     player_takeover = true;
     stop_tick();
-    zmk_rgb_underglow_off();
     led_pixel_clear();
     led_pixel_update();
 }

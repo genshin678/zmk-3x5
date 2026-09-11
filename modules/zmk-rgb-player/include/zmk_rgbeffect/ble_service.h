@@ -1,4 +1,4 @@
-﻿/*
+/*
  * ble_service.h - ZMK Player custom BLE GATT service
  *
  * Service UUID (custom 128-bit):

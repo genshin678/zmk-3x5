@@ -20,7 +20,7 @@
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_LOG_LEVEL);
 
-#define SCORE_STAGING_BYTES  (32 * 1024)
+#define SCORE_STAGING_BYTES  (16 * 1024)
 static uint8_t   staging[SCORE_STAGING_BYTES];
 static uint16_t  staging_len = 0;
 
@@ -33,6 +33,17 @@ static bool      events_notify_enabled;
 /* Send a notification on the characteristic identified by its 16-bit UUID.
  * Looks the value attribute up in the local GATT DB (our per-characteristic
  * UUIDs are unique), which is the correct way to drive bt_gatt_notify. */
+/* Live keypress auto-release: a GATT callback must not sleep, so we
+ * schedule a short work to release the key's ripple after ~80ms. */
+static int8_t keypress_key = -1;
+static struct k_work_delayable keypress_up_work;
+static void keypress_up_work_fn(struct k_work *w) {
+    if (keypress_key >= 0) {
+        effects_on_key_up(keypress_key);
+        keypress_key = -1;
+    }
+}
+
 static void gatt_notify_u16(uint16_t chrc_uuid, const void *data, uint16_t len) {
     const struct bt_gatt_attr *attr =
         bt_gatt_find_by_uuid(NULL, 0, BT_UUID_DECLARE_16(chrc_uuid));
@@ -136,6 +147,8 @@ static ssize_t on_keypress_write(struct bt_conn *conn,
      * TODO: schedule effects_on_key_up(k-1) via k_work_delayable(60ms)
      *       because k_msleep inside a GATT callback is unsafe. */
     effects_on_key_down(k - 1);
+    keypress_key = (int8_t)(k - 1);
+    k_work_schedule(&keypress_up_work, K_MSEC(80));
     return len;
 }
 
@@ -194,6 +207,16 @@ BT_GATT_SERVICE_DEFINE(zmk_player_svc,
 );
 
 int ble_service_init(void) {
+    /* CONFIG_BT_GATT_DYNAMIC_DB=y (ZMK default): services from
+     * BT_GATT_SERVICE_DEFINE are NOT auto-registered, so we must register
+     * explicitly or the PWA will never see our custom service. */
+    int rc = bt_gatt_register(&zmk_player_svc);
+    if (rc < 0) {
+        LOG_ERR("player: failed to register GATT service: %d", rc);
+    } else {
+        LOG_INF("player: GATT service registered");
+    }
+    k_work_init_delayable(&keypress_up_work, keypress_up_work_fn);
     status_rebuild();
     return 0;
 }

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * led_pixel.c - per-pixel WS2812B driver wrapper
  *
  * Uses Zephyr's led_strip API on the device chosen by zmk,led-strip in the

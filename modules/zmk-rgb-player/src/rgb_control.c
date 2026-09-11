@@ -1,12 +1,11 @@
 /*
  * rgb_control.c - global brightness / hue / effect / last-key state
  *
- * Mirrors state into ZMK's &rgb_ug so built-in effects (solid/breathing/
- * rainbow) and our per-pixel effects share the same hue/brightness.
+ * Holds the shared hue/brightness/last-key state used by all of the
+ * module's self-rendered effects (solid/breathing/rainbow/single/...).
  */
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include <zmk/rgb_underglow.h>
 #include <zmk_rgbeffect/rgb_control.h>
 #include <zmk_rgbeffect/effects.h>
 
@@ -41,13 +40,11 @@ static void hue_loop_tick(struct k_work *work) {
 int rgb_control_init(void) {
     k_work_init_delayable(&bri_loop_work, bri_loop_tick);
     k_work_init_delayable(&hue_loop_work, hue_loop_tick);
-    zmk_rgb_underglow_off();
     return 0;
 }
 
 void rgb_control_set_brightness(uint8_t v) {
     brightness = v;
-    zmk_rgb_underglow_set_brightness(v);
 }
 void rgb_control_change_brightness(int delta) {
     int v = (int)brightness + delta;
@@ -59,7 +56,6 @@ uint8_t rgb_control_get_brightness(void) { return brightness; }
 
 void rgb_control_set_hue(uint16_t h) {
     hue = h % 360;
-    zmk_rgb_underglow_set_hsv(hue, 100, brightness);
 }
 void rgb_control_change_hue(int delta) {
     int v = (int)hue + delta;

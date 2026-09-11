@@ -14,5 +14,5 @@ void dfu_request(void) {
     /* Give the log a chance to flush. */
     k_msleep(50);
     NRF_POWER->GPREGRET = 0x57;
-    NVIC_SystemReset();
+    sys_reboot(SYS_REBOOT_WARM);
 }

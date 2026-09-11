@@ -15,7 +15,9 @@ typedef enum {
     RGB_EFFECT_COUNT        = 7
 } rgb_effect_t;
 
+#ifndef LED_PIXEL_COUNT
 #define LED_PIXEL_COUNT 15
+#endif
 
 void effects_init(void);
 void effects_tick_start(void);

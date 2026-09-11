@@ -13,7 +13,7 @@
 #include <zmk_rgbeffect/ble_service.h>
 #include <zmk_rgbeffect/mode_c.h>
 
-LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_LOG_LEVEL);
+LOG_MODULE_REGISTER(zmk_rgbeffect, CONFIG_ZMK_LOG_LEVEL);
 
 static int zmk_rgbeffect_init(void) {
     rgb_control_init();

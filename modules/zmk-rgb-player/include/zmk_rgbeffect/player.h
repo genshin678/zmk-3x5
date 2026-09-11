@@ -7,8 +7,8 @@
 typedef enum { PLAYER_STOPPED, PLAYER_PAUSED, PLAYER_PLAYING } player_state_t;
 typedef enum { PLAYER_MODE_A,  PLAYER_MODE_B }                  player_mode_t;
 
-#define PLAYER_MAX_NOTES   4096
-#define PLAYER_BUF_BYTES   (8 * 1024)
+#define PLAYER_MAX_NOTES   2000
+#define PLAYER_BUF_BYTES   (16 * 1024)
 
 #define PLAYER_CTRL_PLAY       0x01
 #define PLAYER_CTRL_PAUSE      0x02

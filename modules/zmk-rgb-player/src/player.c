@@ -1,4 +1,4 @@
-﻿/*
+/*
  * player.c - score playback engine
  *
  * Score binary format (little-endian):
@@ -16,10 +16,13 @@
  *     for the corresponding scancode to emit a HID keypress.
  */
 #include <zephyr/kernel.h>
+#include <zephyr/sys/atomic.h>
+#include <zephyr/sys/util.h>
 #include <zephyr/logging/log.h>
 #include <zmk/behavior.h>
 #include <zmk/keymap.h>
 #include <zmk/hid.h>
+#include <zmk/endpoints.h>
 #include <dt-bindings/zmk/keys.h>
 #include <zmk_rgbeffect/player.h>
 #include <zmk_rgbeffect/effects.h>
@@ -30,13 +33,13 @@ LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_LOG_LEVEL);
 static const uint8_t KEY_SCANCODE[15] = {
     0x1C, /* Y */
     0x18, /* U */
-    0x0F, /* I */
+    0x0C, /* I */
     0x12, /* O */
     0x13, /* P */
     0x0B, /* H */
     0x0D, /* J */
     0x0E, /* K */
-    0x0A, /* L */
+    0x0F, /* L */
     0x33, /* ; */
     0x11, /* N */
     0x10, /* M */
@@ -68,6 +71,23 @@ static atomic_t play_tick_running;
 static struct led_rgb hsv_to_rgb(uint16_t h, uint8_t s, uint8_t v);
 static void fire_note(uint8_t key_index_0_14, uint16_t duration_ms);
 static void schedule_next_tick(void);
+
+/* Non-blocking key release for Mode B: each key gets its own delayed work so
+ * we never block the system workqueue (which also drives the LED effects).
+ * Without this, k_msleep here would freeze the ripple/LED tick during play. */
+struct player_rel_item {
+    struct k_work_delayable dwork;
+    uint8_t idx;
+};
+static struct player_rel_item rel_items[LED_PIXEL_COUNT];
+
+static void player_rel_fn(struct k_work *work) {
+    struct player_rel_item *it =
+        CONTAINER_OF(work, struct player_rel_item, dwork.work);
+    zmk_hid_keyboard_release(KEY_SCANCODE[it->idx]);
+    zmk_endpoints_send_report(0x07); /* HID keyboard usage page */
+    effects_on_key_up(it->idx);
+}
 
 static void play_tick(struct k_work *work) {
     if (state != PLAYER_PLAYING) return;
@@ -107,21 +127,23 @@ static void fire_note(uint8_t idx, uint16_t duration_ms) {
     effects_on_key_down(idx);
 
     if (mode == PLAYER_MODE_B) {
-        /* Press the key for min(duration, 60ms) so the game's chord
-         * detector registers it but the key doesn't get stuck. */
+        /* Press the key for a brief pulse so the game's chord detector
+         * registers it but the key doesn't get stuck, then push the HID
+         * report out over the active transport (USB/BLE). The release is
+         * scheduled (non-blocking) so the system workqueue stays free. */
         uint16_t press_ms = duration_ms < 60 ? duration_ms : 60;
         if (press_ms < 20) press_ms = 20;
         zmk_hid_keyboard_press(KEY_SCANCODE[idx]);
-        k_msleep(press_ms);
-        zmk_hid_keyboard_release(KEY_SCANCODE[idx]);
+        zmk_endpoints_send_report(0x07); /* HID keyboard usage page */
+        rel_items[idx].idx = idx;
+        k_work_schedule(&rel_items[idx].dwork, K_MSEC(press_ms));
     }
-
-    /* After the note's natural duration, tell the effect the key is up. */
-    k_msleep(duration_ms > 80 ? 80 : duration_ms);
-    effects_on_key_up(idx);
 }
 
 int player_init(void) {
+    for (int i = 0; i < LED_PIXEL_COUNT; i++) {
+        k_work_init_delayable(&rel_items[i].dwork, player_rel_fn);
+    }
     return 0;
 }
 

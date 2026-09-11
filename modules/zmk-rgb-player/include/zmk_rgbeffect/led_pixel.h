@@ -1,4 +1,4 @@
-﻿/*
+/*
  * led_pixel.h - per-pixel WS2812B driver wrapper for the 15-key ZMK keyboard
  *
  * Public API used by effects.c / player.c / behaviors:
@@ -13,7 +13,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#ifndef LED_PIXEL_COUNT
 #define LED_PIXEL_COUNT 15
+#endif
 
 int  led_pixel_init(void);
 void led_pixel_set(uint8_t idx, uint8_t r, uint8_t g, uint8_t b);

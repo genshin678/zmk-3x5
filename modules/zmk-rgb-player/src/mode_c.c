@@ -20,7 +20,6 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/drivers/led_strip.h>
 #include <zmk/events/position_state_changed.h>
-#include <zmk/events/events.h>
 #include <zmk_rgbeffect/mode_c.h>
 #include <zmk_rgbeffect/effects.h>
 #include <zmk_rgbeffect/led_pixel.h>
@@ -45,6 +44,8 @@ static uint32_t  app_ref_ms = 0;
 static struct k_work_delayable timeout_work;
 static struct k_work_delayable advance_work;
 static struct k_work_delayable restore_work;
+
+static void mc_advance(void);
 
 /* Cue colors (GRB order not needed; led_rgb is r,g,b). */
 static const struct led_rgb CUE_BLUE  = { .r = 0,   .g = 40,  .b = 255 };

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * cdc.c - USB CDC debug console for loading scores without BLE
  *
  * Commands (line-based, LF terminated):
@@ -13,6 +13,7 @@
  */
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/devicetree.h>
 #include <zephyr/drivers/uart.h>
 #include <zmk_rgbeffect/player.h>
 #include <zmk_rgbeffect/ble_service.h>
@@ -68,6 +69,7 @@ static void process_line(const char *line) {
 }
 
 int cdc_init(void) {
+#if DT_HAS_CHOSEN(zmk_console)
     const struct device *dev = DEVICE_DT_GET(DT_CHOSEN(zmk_console));
     if (!device_is_ready(dev)) {
         LOG_ERR("console device not ready");
@@ -77,4 +79,8 @@ int cdc_init(void) {
     uart_irq_rx_enable(dev);
     LOG_INF("cdc console ready");
     return 0;
+#else
+    LOG_WRN("zmk,console chosen not defined; cdc console disabled");
+    return -ENOSYS;
+#endif
 }

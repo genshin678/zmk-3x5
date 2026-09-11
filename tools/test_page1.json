@@ -1,0 +1,245 @@
+[
+ {
+  "step": 0,
+  "page": "Angel_按键谱分页_第01页",
+  "row": 5,
+  "col": 0,
+  "keys": [
+   12
+  ]
+ },
+ {
+  "step": 1,
+  "page": "Angel_按键谱分页_第01页",
+  "row": 8,
+  "col": 4,
+  "keys": [
+   13
+  ]
+ },
+ {
+  "step": 2,
+  "page": "Angel_按键谱分页_第02页",
+  "row": 3,
+  "col": 2,
+  "keys": [
+   1
+  ]
+ },
+ {
+  "step": 3,
+  "page": "Angel_按键谱分页_第03页",
+  "row": 5,
+  "col": 0,
+  "keys": [
+   12
+  ]
+ },
+ {
+  "step": 4,
+  "page": "Angel_按键谱分页_第03页",
+  "row": 5,
+  "col": 4,
+  "keys": [
+   13
+  ]
+ },
+ {
+  "step": 5,
+  "page": "Angel_按键谱分页_第03页",
+  "row": 11,
+  "col": 4,
+  "keys": [
+   8
+  ]
+ },
+ {
+  "step": 6,
+  "page": "Angel_按键谱分页_第04页",
+  "row": 1,
+  "col": 4,
+  "keys": [
+   8
+  ]
+ },
+ {
+  "step": 7,
+  "page": "Angel_按键谱分页_第04页",
+  "row": 12,
+  "col": 5,
+  "keys": [
+   4
+  ]
+ },
+ {
+  "step": 8,
+  "page": "Angel_按键谱分页_第05页",
+  "row": 0,
+  "col": 2,
+  "keys": [
+   11
+  ]
+ },
+ {
+  "step": 9,
+  "page": "Angel_按键谱分页_第05页",
+  "row": 0,
+  "col": 4,
+  "keys": [
+   13
+  ]
+ },
+ {
+  "step": 10,
+  "page": "Angel_按键谱分页_第05页",
+  "row": 5,
+  "col": 5,
+  "keys": [
+   14
+  ]
+ },
+ {
+  "step": 11,
+  "page": "Angel_按键谱分页_第06页",
+  "row": 0,
+  "col": 2,
+  "keys": [
+   11
+  ]
+ },
+ {
+  "step": 12,
+  "page": "Angel_按键谱分页_第06页",
+  "row": 3,
+  "col": 0,
+  "keys": [
+   2
+  ]
+ },
+ {
+  "step": 13,
+  "page": "Angel_按键谱分页_第06页",
+  "row": 3,
+  "col": 4,
+  "keys": [
+   3
+  ]
+ },
+ {
+  "step": 14,
+  "page": "Angel_按键谱分页_第06页",
+  "row": 5,
+  "col": 2,
+  "keys": [
+   11
+  ]
+ },
+ {
+  "step": 15,
+  "page": "Angel_按键谱分页_第07页",
+  "row": 0,
+  "col": 2,
+  "keys": [
+   11
+  ]
+ },
+ {
+  "step": 16,
+  "page": "Angel_按键谱分页_第07页",
+  "row": 2,
+  "col": 4,
+  "keys": [
+   8
+  ]
+ },
+ {
+  "step": 17,
+  "page": "Angel_按键谱分页_第07页",
+  "row": 3,
+  "col": 4,
+  "keys": [
+   3
+  ]
+ },
+ {
+  "step": 18,
+  "page": "Angel_按键谱分页_第07页",
+  "row": 6,
+  "col": 4,
+  "keys": [
+   13
+  ]
+ },
+ {
+  "step": 19,
+  "page": "Angel_按键谱分页_第08页",
+  "row": 1,
+  "col": 5,
+  "keys": [
+   9
+  ]
+ },
+ {
+  "step": 20,
+  "page": "Angel_按键谱分页_第08页",
+  "row": 5,
+  "col": 5,
+  "keys": [
+   14
+  ]
+ },
+ {
+  "step": 21,
+  "page": "Angel_按键谱分页_第08页",
+  "row": 8,
+  "col": 0,
+  "keys": [
+   12
+  ]
+ },
+ {
+  "step": 22,
+  "page": "Angel_按键谱分页_第08页",
+  "row": 11,
+  "col": 0,
+  "keys": [
+   7
+  ]
+ },
+ {
+  "step": 23,
+  "page": "Angel_按键谱分页_第09页",
+  "row": 5,
+  "col": 2,
+  "keys": [
+   11
+  ]
+ },
+ {
+  "step": 24,
+  "page": "Angel_按键谱分页_第10页",
+  "row": 3,
+  "col": 2,
+  "keys": [
+   1
+  ]
+ },
+ {
+  "step": 25,
+  "page": "Angel_按键谱分页_第10页",
+  "row": 5,
+  "col": 4,
+  "keys": [
+   13
+  ]
+ },
+ {
+  "step": 26,
+  "page": "Angel_按键谱分页_第11页",
+  "row": 0,
+  "col": 5,
+  "keys": [
+   14
+  ]
+ }
+]

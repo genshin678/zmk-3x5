@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ZMK 3×5 播放器</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #1a1a2e;
+  color: #e0e0e0;
+  font-family: 'Segoe UI', sans-serif;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 20px;
+}
+
+h1 { color: #ff6b35; margin-bottom: 8px; font-size: 1.4rem; }
+.sub { color: #888; font-size: 0.85rem; margin-bottom: 24px; }
+
+/* 键盘可视化 */
+#keyboard {
+  display: grid;
+  grid-template-columns: repeat(5, 60px);
+  grid-template-rows: repeat(3, 60px);
+  gap: 6px;
+  margin-bottom: 24px;
+}
+
+.key {
+  background: #16213e;
+  border: 2px solid #0f3460;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+  font-weight: bold;
+  color: #8899aa;
+  transition: all 0.05s;
+  user-select: none;
+}
+
+.key.active {
+  background: #ff6b35;
+  border-color: #ffb347;
+  color: #fff;
+  box-shadow: 0 0 16px #ff6b3588;
+}
+
+.key.led-on {
+  background: #ffffff;
+  border-color: #ffffff;
+  color: #1a1a2e;
+  box-shadow: 0 0 20px #ffffffaa;
+}
+
+.key.led-hint {
+  background: #22577a;
+  border-color: #4cc9f0;
+  color: #4cc9f0;
+  box-shadow: 0 0 12px #4cc9f055;
+}
+
+/* 控制面板 */
+#controls {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+
+button {
+  background: #ff6b35;
+  color: #fff;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  transition: background 0.2s;
+}
+button:hover { background: #e55a2b; }
+button:disabled { background: #444; color: #888; cursor: not-allowed; }
+
+select, input[type="file"] {
+  background: #16213e;
+  color: #e0e0e0;
+  border: 1px solid #0f3460;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+/* 进度条 */
+#progress-bar {
+  width: 100%;
+  max-width: 400px;
+  height: 6px;
+  background: #0f3460;
+  border-radius: 3px;
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+#progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #ff6b35, #ffb347);
+  width: 0%;
+  transition: width 0.1s linear;
+}
+
+/* 模式选择 */
+#mode-select {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.mode-btn {
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-size: 0.85rem;
+  border: 2px solid #0f3460;
+  background: transparent;
+  color: #888;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.mode-btn.selected {
+  border-color: #ff6b35;
+  color: #ff6b35;
+  background: #ff6b3511;
+}
+
+/* 状态 */
+#status {
+  color: #4cc9f0;
+  font-size: 0.9rem;
+  min-height: 24px;
+  text-align: center;
+}
+#status.warn { color: #ffb347; }
+#status.err { color: #ff4444; }
+
+/* JSON 编辑器 */
+#json-editor {
+  width: 100%;
+  max-width: 500px;
+  background: #0f3460;
+  border: 1px solid #16213e;
+  border-radius: 8px;
+  color: #aaffaa;
+  font-family: 'Consolas', monospace;
+  font-size: 0.75rem;
+  padding: 10px;
+  min-height: 120px;
+  resize: vertical;
+  display: none;
+}
+#json-editor.show { display: block; }
+
+/* 下一个音符提示 */
+#next-hint {
+  font-size: 0.8rem;
+  color: #888;
+  margin-top: 8px;
+}
+#next-hint span { color: #4cc9f0; font-weight: bold; }
+
+/* 音符统计 */
+#stats {
+  font-size: 0.8rem;
+  color: #666;
+  margin-top: 16px;
+}
+</style>
+</head>
+<body>
+
+<h1>🎹 ZMK 3×5 播放器</h1>
+<p class="sub">nice!nano BLE 播放 + LED 引导</p>
+
+<!-- 键盘可视化 -->
+<div id="keyboard"></div>
+
+<!-- 控制 -->
+<div id="controls">
+  <button id="btn-connect">连接键盘</button>
+  <button id="btn-load" disabled>加载谱子</button>
+  <button id="btn-play" disabled>▶ 播放</button>
+  <button id="btn-pause" disabled>⏸ 暂停</button>
+  <button id="btn-stop" disabled>⏹ 停止</button>
+</div>
+
+<!-- 进度 -->
+<div id="progress-bar"><div id="progress-fill"></div></div>
+
+<!-- 模式选择 -->
+<div id="mode-select">
+  <button class="mode-btn selected" data-mode="A">💡 模式 A：LED 引导（你按）</button>
+  <button class="mode-btn" data-mode="B">🤖 模式 B：引导 + 自动按</button>
+</div>
+
+<!-- 文件 -->
+<input type="file" id="file-input" accept=".json" style="display:none">
+<div id="status"></div>
+<div id="next-hint"></div>
+
+<!-- JSON 编辑器（高级模式） -->
+<textarea id="json-editor" placeholder="粘贴 JSON 谱子数据..."></textarea>
+<button id="btn-toggle-json" style="margin-top:8px;background:#16213e;font-size:0.8rem;padding:6px 14px;">显示/隐藏 JSON 编辑器</button>
+
+<div id="stats"></div>
+
+<script>
+// ── 布局定义 ──────────────────────────────────────
+// 物理键布局（行顺序从上到下）
+const PHYSICAL_LAYOUT = [
+  ['Y','U','I','O','P'],
+  ['H','J','K','L',';'],
+  ['N','M',',','.','/']
+];
+
+// 15 键索引 → 物理键名
+const IDX_TO_KEY = [
+  'Y','U','I','O','P',
+  'H','J','K','L',';',
+  'N','M',',','.','/'
+];
+// 物理键名 → 15 键索引
+const KEY_TO_IDX = {};
+IDX_TO_KEY.forEach((k,i) => KEY_TO_IDX[k] = i);
+
+// ── 全局状态 ──────────────────────────────────────
+let mode = 'A';           // 'A' 引导 / 'B' 引导+自动按
+let score = [];           // 解析后的音符序列 [{time, idx}]
+let startTime = 0;        // 播放开始时间（AudioContext time）
+let playing = false;
+let paused = false;
+let pauseOffset = 0;
+let animFrame = null;
+let bleDevice = null;
+let bleServer = null;
+let hid = null;
+
+// ── BLE UUID ──────────────────────────────────────
+const BLE_HID_SERVICE  = '00001812-0000-1000-8000-00805f9b34fb'; // HID Service
+const BLE_HID_REPORT   = '00002a4d-0000-1000-8000-00805f9b34fb'; // Report Char
+const BLE_BAT_SERVICE  = '0000180f-0000-1000-8000-00805f9b34fb'; // Battery
+
+// ── DOM 构建 ──────────────────────────────────────
+const grid = document.getElementById('keyboard');
+PHYSICAL_LAYOUT.flat().forEach((label, linearIdx) => {
+  const r = Math.floor(linearIdx / 5);
+  const c = linearIdx % 5;
+  const el = document.createElement('div');
+  el.className = 'key';
+  el.id = 'key-' + linearIdx;
+  el.textContent = label;
+  el.dataset.row = r;
+  el.dataset.col = c;
+  el.dataset.idx = linearIdx;
+  el.onclick = () => simulateKeyPress(linearIdx);
+  grid.appendChild(el);
+});
+
+document.getElementById('btn-connect').onclick  = connectBLE;
+document.getElementById('btn-load').onclick     = () => document.getElementById('file-input').click();
+document.getElementById('file-input').onchange  = loadFile;
+document.getElementById('btn-play').onclick     = play;
+document.getElementById('btn-pause').onclick    = pause;
+document.getElementById('btn-stop').onclick     = stop;
+document.getElementById('btn-toggle-json').onclick = toggleJSON;
+
+document.querySelectorAll('.mode-btn').forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('selected'));
+    btn.classList.add('selected');
+    mode = btn.dataset.mode;
+  };
+});
+
+// ── JSON 编辑器 ───────────────────────────────────
+let jsonEditorVisible = false;
+function toggleJSON() {
+  jsonEditorVisible = !jsonEditorVisible;
+  const ed = document.getElementById('json-editor');
+  ed.classList.toggle('show', jsonEditorVisible);
+}
+
+document.getElementById('json-editor').addEventListener('keydown', e => {
+  if (e.key === 'Escape') toggleJSON();
+});
+
+// ── 谱子加载 ──────────────────────────────────────
+function loadFile(evt) {
+  const file = evt.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => parseAndLoad(e.target.result);
+  reader.readAsText(file);
+}
+
+function parseAndLoad(raw) {
+  try {
+    let data = JSON.parse(raw);
+    score = normalizeScore(data);
+    document.getElementById('btn-play').disabled = false;
+    document.getElementById('stats').textContent =
+      `✅ 已加载 ${score.length} 个音符 | 时长 ${(score.at(-1)?.time / 1000).toFixed(1)}s`;
+    setStatus('谱子加载成功');
+  } catch (e) {
+    setStatus('JSON 解析失败: ' + e.message, 'err');
+  }
+}
+
+// 把各种格式的原始数据正规化为 [{time, idx}]
+function normalizeScore(data) {
+  // 情况1：直接是数组
+  if (Array.isArray(data)) return parseArray(data);
+  // 情况2：{data: [...]} 或 {notes: [...]} 等包装
+  const arr = data?.data ?? data?.notes ?? data?.noteList ?? data?.score ?? null;
+  if (Array.isArray(arr)) return parseArray(arr);
+  // 情况3：多轨取第一轨
+  const track = data?.tracks?.[0] ?? data?.track ?? null;
+  if (track) {
+    const a = track?.notes ?? track?.noteList ?? (Array.isArray(track) ? track : null);
+    if (a) return parseArray(a);
+  }
+  throw new Error('无法识别谱子格式，贴原始 JSON 给 QClaw');
+}
+
+function parseArray(arr) {
+  return arr.map(item => {
+    const t = item.time ?? item.t ?? item.start ?? item.ms ?? 0;
+    const raw = item.key ?? item.keyCode ?? item.note ?? item.n ?? item.keyIndex ?? item.idx;
+    let idx;
+    if (typeof raw === 'number') {
+      idx = raw; // 直接是 0-14 索引
+    } else {
+      idx = KEY_TO_IDX[raw] ?? parseInt(raw, 10);
+    }
+    if (idx < 0 || idx > 14) idx = 0;
+    return { time: Math.round(t), idx };
+  }).filter(n => n.time >= 0).sort((a,b) => a.time - b.time);
+}
+
+// ── 播放逻辑 ──────────────────────────────────────
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+function play() {
+  if (!score.length) return;
+  if (paused) {
+    // 恢复
+    paused = false;
+    startTime = audioCtx.currentTime - pauseOffset / 1000;
+    document.getElementById('btn-pause').textContent = '⏸ 暂停';
+    setStatus('继续播放');
+  } else {
+    // 正式开始
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    startTime = audioCtx.currentTime;
+    setStatus('▶ 播放中…');
+  }
+  playing = true;
+  paused = false;
+  document.getElementById('btn-play').disabled = true;
+  document.getElementById('btn-pause').disabled = false;
+  document.getElementById('btn-stop').disabled = false;
+  tick();
+}
+
+function tick() {
+  if (!playing || paused) return;
+  const elapsed = (audioCtx.currentTime - startTime) * 1000; // ms
+  const cur = score[0];
+  if (!cur || elapsed < cur.time - 300) {
+    // 未到下一个音符，清除所有提示
+    clearAllKeys();
+  }
+  animFrame = requestAnimationFrame(tick);
+}
+
+function pause() {
+  if (!playing) return;
+  paused = true;
+  pauseOffset = (audioCtx.currentTime - startTime) * 1000;
+  cancelAnimationFrame(animFrame);
+  document.getElementById('btn-play').disabled = false;
+  document.getElementById('btn-play').textContent = '▶ 继续';
+  document.getElementById('btn-pause').textContent = '▶ 暂停';
+  setStatus('⏸ 已暂停');
+}
+
+function stop() {
+  playing = false;
+  paused = false;
+  pauseOffset = 0;
+  cancelAnimationFrame(animFrame);
+  clearAllKeys();
+  document.getElementById('progress-fill').style.width = '0%';
+  document.getElementById('next-hint').innerHTML = '';
+  document.getElementById('btn-play').disabled = false;
+  document.getElementById('btn-play').textContent = '▶ 播放';
+  document.getElementById('btn-pause').disabled = true;
+  document.getElementById('btn-pause').textContent = '⏸ 暂停';
+  document.getElementById('btn-stop').disabled = true;
+  setStatus('已停止');
+}
+
+// ── 按键模拟（点击键盘上的键）──────────────────────
+function simulateKeyPress(idx) {
+  if (playing) return;
+  flashKey(idx, 'active');
+}
+
+function flashKey(idx, cls) {
+  const el = document.getElementById('key-' + idx);
+  el.classList.add(cls);
+  setTimeout(() => el.classList.remove(cls), 120);
+}
+
+// ── LED 提示 + HID 触发（播放时）────────────────────
+function setKeyLed(idx, state) {
+  const el = document.getElementById('key-' + idx);
+  el.classList.remove('led-hint', 'led-on', 'active');
+  if (state === 'hint') el.classList.add('led-hint');
+  else if (state === 'on') el.classList.add('led-on');
+}
+
+function clearAllKeys() {
+  for (let i = 0; i < 15; i++) setKeyLed(i, null);
+}
+
+// ── BLE 连接 ──────────────────────────────────────
+async function connectBLE() {
+  setStatus('正在搜索 nice!nano...', 'warn');
+  try {
+    bleDevice = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: 'nice!nano' }],
+      optionalServices: [BLE_HID_SERVICE, BLE_BAT_SERVICE]
+    });
+    const server = await bleDevice.gatt.connect();
+    bleServer = server;
+    const hidSvc = await server.getPrimaryService(BLE_HID_SERVICE);
+    // 获取 HID Report 特征（用于发送按键）
+    const char = await hidSvc.getCharacteristic(BLE_HID_REPORT);
+    hid = char;
+    setStatus('✅ 键盘已连接');
+    document.getElementById('btn-connect').textContent = '🔗 已连接';
+    document.getElementById('btn-load').disabled = false;
+    bleDevice.addEventListener('gattserverdisconnected', () => {
+      setStatus('⚠️ 蓝牙断开', 'warn');
+      hid = null;
+      document.getElementById('btn-connect').textContent = '连接键盘';
+    });
+  } catch (e) {
+    setStatus('连接失败: ' + e.message, 'err');
+  }
+}
+
+// BLE 发送按键（模式 B 用）
+async function sendKeyDown(idx) {
+  if (!hid) return;
+  const keyName = IDX_TO_KEY[idx];
+  const keyCode = KEYCHAR_TO_KEYCODE[keyName];
+  if (!keyCode) return;
+  // USB HID Boot Report: 1 modifier + 6 reserved + keycode
+  const buf = new Uint8Array(8);
+  buf[2] = keyCode;
+  await hid.writeValue(buf);
+  // 松开
+  await new Promise(r => setTimeout(r, 60));
+  const buf2 = new Uint8Array(8);
+  await hid.writeValue(buf2);
+}
+
+// 键盘字符 → USB HID scancode（Boot Protocol）
+const KEYCHAR_TO_KEYCODE = {
+  'Y': 0x1C, 'U': 0x18, 'I': 0x0F, 'O': 0x12, 'P': 0x13,
+  'H': 0x0B, 'J': 0x0D, 'K': 0x0E, 'L': 0x0A, ';': 0x33,
+  'N': 0x11, 'M': 0x10, ',': 0x36, '.': 0x37, '/': 0x38
+};
+
+// ── 状态提示 ──────────────────────────────────────
+function setStatus(msg, type = '') {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = type;
+}
+</script>
+</body>
+</html>

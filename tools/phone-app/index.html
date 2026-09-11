@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.json">
+<title>光遇琴谱引导</title>
+<style>
+:root {
+  --bg: #0f0f1a;
+  --panel: #1a1a2e;
+  --border: #2a2a4a;
+  --blue: #1e90ff;
+  --red: #ff4444;
+  --green: #44ff88;
+  --yellow: #ffd700;
+  --text: #e0e0f0;
+  --muted: #8888aa;
+  --key-bg: #252540;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, system-ui, sans-serif;
+  min-height: 100vh;
+  padding: 12px;
+  font-size: 14px;
+}
+button {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.15s;
+}
+button:hover:not(:disabled) { background: #2a2a50; }
+button:disabled { opacity: 0.4; cursor: default; }
+button.primary { background: var(--blue); border-color: var(--blue); color: #fff; font-weight: 600; }
+button.danger  { background: var(--red);  border-color: var(--red);  color: #fff; }
+button.success { background: var(--green); border-color: var(--green); color: #000; }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 12px;
+}
+.panel-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+/* Status bar */
+.status-bar {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 12px; color: var(--muted); margin-bottom: 12px;
+}
+.status-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--muted);
+}
+.status-dot.connected { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.status-dot.playing   { background: var(--blue); box-shadow: 0 0 6px var(--blue); animation: pulse 0.8s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+
+/* Connect panel */
+.connect-row {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+}
+select {
+  flex: 1; min-width: 120px;
+  background: var(--bg); border: 1px solid var(--border);
+  color: var(--text); padding: 7px 10px; border-radius: 8px; font-size: 13px;
+}
+
+/* Score meta */
+.score-meta {
+  display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 10px;
+}
+.meta-item { background: var(--bg); border-radius: 8px; padding: 8px 10px; text-align: center; }
+.meta-item .val { font-size: 20px; font-weight: 700; color: var(--blue); }
+.meta-item .lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; margin-top: 2px; }
+
+/* Keyboard grid */
+#keyboard-grid {
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px;
+  margin-top: 10px; padding: 10px; background: var(--bg); border-radius: 10px;
+}
+.key-cell {
+  aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
+  border-radius: 6px; font-size: 11px; font-weight: 700;
+  background: var(--key-bg); color: var(--muted);
+  border: 2px solid transparent;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  user-select: none;
+}
+.key-cell.cur {
+  background: rgba(30,144,255,0.28); border-color: var(--blue); color: var(--blue);
+  box-shadow: 0 0 8px rgba(30,144,255,0.5);
+}
+.key-cell.nxt {
+  background: rgba(255,68,68,0.22); border-color: var(--red); color: var(--red);
+}
+.key-cell.both {
+  background: rgba(68,255,136,0.22); border-color: var(--green); color: var(--green);
+  box-shadow: 0 0 10px rgba(68,255,136,0.4);
+}
+
+/* Step row */
+.step-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.step-info { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.step-num { font-size: 12px; color: var(--muted); }
+.step-keys { font-size: 13px; font-weight: 600; }
+.progress-bar { height: 4px; background: var(--border); border-radius: 2px; margin-top: 6px; overflow: hidden; }
+.progress-fill { height: 100%; background: var(--blue); border-radius: 2px; transition: width 0.3s; }
+
+/* Event log */
+#event-log {
+  height: 80px; overflow-y: auto; background: var(--bg); border-radius: 8px;
+  padding: 8px; font-family: 'Courier New', monospace; font-size: 11px; color: var(--muted);
+}
+.log-entry { margin-bottom: 2px; }
+.log-entry.hit     { color: var(--green); }
+.log-entry.miss    { color: var(--red); }
+.log-entry.timeout { color: var(--yellow); }
+.log-entry.done    { color: var(--blue); font-weight: 700; }
+.log-entry.info    { color: var(--muted); }
+
+/* Floating overlay */
+#floating-overlay {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: rgba(15,15,26,0.92); border: 1px solid var(--border);
+  border-radius: 14px; padding: 10px 16px; display: none;
+  z-index: 2147483647; min-width: 220px;
+  backdrop-filter: blur(8px); box-shadow: 0 4px 24px rgba(0,0,0,0.6);
+}
+#floating-overlay.visible { display: flex; align-items: center; gap: 12px; }
+.flot-key {
+  padding: 3px 10px; border-radius: 6px; font-weight: 700; font-size: 15px;
+  min-width: 32px; text-align: center;
+}
+.flot-key.cur  { background: rgba(30,144,255,0.3); color: var(--blue); border: 1px solid var(--blue); }
+.flot-key.nxt  { background: rgba(255,68,68,0.25); color: var(--red); border: 1px solid var(--red); }
+.flot-step { font-size: 11px; color: var(--muted); margin-left: auto; white-space: nowrap; }
+
+/* Hint */
+.hint {
+  background: rgba(30,144,255,0.1); border: 1px solid rgba(30,144,255,0.3);
+  border-radius: 8px; padding: 10px 12px; font-size: 12px;
+  color: var(--muted); line-height: 1.7;
+}
+.hint strong { color: var(--text); }
+</style>
+</head>
+<body>
+
+<!-- Status bar -->
+<div class="status-bar">
+  <div class="status-dot" id="status-dot"></div>
+  <span id="status-text">未连接</span>
+  <span style="margin-left:auto;font-size:11px;color:var(--muted)" id="ble-name"></span>
+</div>
+
+<!-- Connect -->
+<div class="panel">
+  <div class="panel-title">蓝牙连接</div>
+  <div class="connect-row">
+    <select id="device-select"><option value="">扫描中…</option></select>
+    <button id="btn-scan"      onclick="scanDevices()">&#128269; 扫描</button>
+    <button id="btn-connect"   onclick="connectSelected()" class="primary" disabled>连接</button>
+    <button id="btn-disconnect" onclick="disconnect()" class="danger" disabled>断开</button>
+  </div>
+</div>
+
+<!-- Score -->
+<div class="panel">
+  <div class="panel-title">琴谱（image-score.json）</div>
+  <div class="connect-row" style="margin-bottom:10px">
+    <input type="file" id="file-input" accept=".json" style="display:none" onchange="loadScoreFile(event)">
+    <button onclick="document.getElementById('file-input').click()">&#128193; 加载谱面 JSON</button>
+    <button id="btn-push" onclick="pushAllSteps()" class="primary" disabled>&#128229; 推送谱面</button>
+  </div>
+  <div class="score-meta">
+    <div class="meta-item"><div class="val" id="meta-pages">—</div><div class="lbl">页数</div></div>
+    <div class="meta-item"><div class="val" id="meta-steps">—</div><div class="lbl">总步数</div></div>
+    <div class="meta-item"><div class="val" id="meta-keys">—</div><div class="lbl">按键数</div></div>
+  </div>
+  <div id="score-loaded" style="display:none;font-size:12px;color:var(--muted)">
+    &#10004; <span id="score-name"></span>
+  </div>
+</div>
+
+<!-- Mode C Controls -->
+<div class="panel">
+  <div class="panel-title">引导弹奏（Mode C）</div>
+  <div class="connect-row" style="margin-bottom:8px">
+    <button id="btn-start"   onclick="modeCStart()" class="success" disabled>&#9654; 开始</button>
+    <button id="btn-stop"    onclick="modeCStop()"  class="danger"  disabled>&#9632; 停止</button>
+    <button id="btn-overlay" onclick="toggleOverlay()">&#128444; 悬浮窗</button>
+  </div>
+  <div id="keyboard-grid"></div>
+  <div class="step-row">
+    <button id="btn-prev" onclick="prevStep()" disabled>&#9664;</button>
+    <div class="step-info">
+      <div class="step-num" id="step-num">—</div>
+      <div class="step-keys" id="step-keys">—</div>
+      <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
+    </div>
+    <button id="btn-next" onclick="nextStep()" disabled>&#9654;</button>
+  </div>
+</div>
+
+<!-- BLE Events log -->
+<div class="panel">
+  <div class="panel-title">BLE 事件 <span style="font-weight:400;text-transform:none">(0xBE05 NOTIFY)</span></div>
+  <div id="event-log"><div class="log-entry info">等待连接…</div></div>
+</div>
+
+<!-- Hint -->
+<div class="hint">
+  <strong>使用说明：</strong><br>
+  1. 连接 nice!nano 键盘蓝牙（设备名以 zmk / nice 开头）<br>
+  2. 加载 <code>image-score.json</code> 谱面文件<br>
+  3. 点击「推送谱面」将所有步骤发送到键盘<br>
+  4. 点击「开始」，键盘显示当前键<strong style="color:var(--blue)">蓝</strong>、下一步<strong style="color:var(--red)">红</strong><br>
+  5. 按对→绿闪+推进，按错→全红，按太慢→红闪跳过<br>
+  6. 「悬浮窗」在屏幕上显示简化提示格（Android 需授权显示在其他应用上层）
+</div>
+
+<!-- Floating overlay -->
+<div id="floating-overlay">
+  <span style="font-size:11px;color:var(--muted)">当前</span>
+  <span class="flot-key cur" id="flot-cur">—</span>
+  <span style="font-size:11px;color:var(--muted)">下一步</span>
+  <span class="flot-key nxt" id="flot-nxt">—</span>
+  <span class="flot-step" id="flot-step">0/0</span>
+</div>
+
+<script>
+/* ================================================================
+   ZMK Player BLE GATT Service (9e3c1b0a-7a4b-4f0e-8d1d-7a6f5c3b2a10)
+   BE01 Score Upload (WRITE) | BE02 Control (WRITE)
+   BE03 Keypress (WRITE)     | BE04 Status (READ+NOTIFY)
+   BE05 Events (NOTIFY — Mode C: HIT/MISS/TIMEOUT/DONE)
+   ================================================================ */
+// Custom 128-bit SERVICE UUID (firmware BT_UUID_DECLARE_128, textual order)
+const SVC  = '9e3c1b0a-7a4b-4f0e-8d1d-7a6f5c3b2a10';
+// Fallback if the flashed firmware still broadcasts the byte-reversed form
+const SVC_REVERSED = '102a3b5c-6f7a-1d8d-0e4f-4b7a0a1b3c9e';
+// Characteristics are declared via BT_UUID_DECLARE_16(0xBE0x) → SIG base UUID
+const CUUID = {
+  score:    '0000be01-0000-1000-8000-00805f9b34fb',
+  control:  '0000be02-0000-1000-8000-00805f9b34fb',
+  keypress: '0000be03-0000-1000-8000-00805f9b34fb',
+  status:   '0000be04-0000-1000-8000-00805f9b34fb',
+  events:   '0000be05-0000-1000-8000-00805f9b34fb',
+};
+
+const CMD_START = 0x30;
+const CMD_PUSH  = 0x31;
+const CMD_TICK  = 0x32;
+const CMD_STOP  = 0x35;
+
+const KEY_LABELS = ['','Y','U','I','O','P','H','J','K','L',';','N','M',',','.','/'];
+
+// ── State ────────────────────────────────────────────────────
+let gattServer     = null;
+let btDevice       = null;
+let chrScore = null, chrControl = null, chrKeypress = null, chrStatus = null, chrEvents = null;
+let scoreData      = null;   // parsed JSON
+let scorePushed    = false;  // steps sent to keyboard
+let totalSteps     = 0;      // logical step count (pages × steps)
+let currentStep    = 0;      // logical step index (0-based)
+let modeCActive    = false;
+let overlayVisible = false;
+
+// ── Keyboard grid ────────────────────────────────────────────
+(function buildGrid() {
+  const grid = document.getElementById('keyboard-grid');
+  for (let i = 1; i <= 15; i++) {
+    const cell = document.createElement('div');
+    cell.className = 'key-cell';
+    cell.id = 'kc-' + i;
+    cell.textContent = KEY_LABELS[i];
+    grid.appendChild(cell);
+  }
+})();
+
+function updateGrid(curKeys, nxtKeys) {
+  for (let i = 1; i <= 15; i++) {
+    const cell = document.getElementById('kc-' + i);
+    const isCur = curKeys.includes(i);
+    const isNxt = nxtKeys.includes(i);
+    cell.className = 'key-cell' + (isCur && isNxt ? ' both' : isCur ? ' cur' : isNxt ? ' nxt' : '');
+  }
+}
+
+function clearGrid() { updateGrid([], []); }
+
+// ── UI helpers ───────────────────────────────────────────────
+function setStatus(text, state) {
+  document.getElementById('status-text').textContent = text;
+  document.getElementById('status-dot').className = 'status-dot' + (state ? ' ' + state : '');
+}
+
+function addLog(msg, cls = 'info') {
+  const log = document.getElementById('event-log');
+  const d = document.createElement('div');
+  d.className = 'log-entry ' + cls;
+  d.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+}
+
+function setMeta(pages, steps, keys) {
+  document.getElementById('meta-pages').textContent = pages ?? '—';
+  document.getElementById('meta-steps').textContent = steps ?? '—';
+  document.getElementById('meta-keys').textContent  = keys ?? '—';
+}
+
+// Flatten all pages into a single logical step list
+function allLogicalSteps() {
+  if (!scoreData) return [];
+  return scoreData.pages.flatMap(p => p.steps || []);
+}
+
+function updateStepUI() {
+  const steps = allLogicalSteps();
+  const total = totalSteps;
+
+  if (!scoreData || !scorePushed) {
+    document.getElementById('step-num').textContent   = '—';
+    document.getElementById('step-keys').textContent  = '—';
+    document.getElementById('progress-fill').style.width = '0%';
+    document.getElementById('btn-prev').disabled = true;
+    document.getElementById('btn-next').disabled = !scorePushed;
+    clearGrid();
+    return;
+  }
+
+  document.getElementById('step-num').textContent = `第 ${currentStep + 1} / ${total} 步`;
+
+  const curKeys = steps[currentStep]?.keys ?? [];
+  const nxtKeys = currentStep + 1 < total ? (steps[currentStep + 1]?.keys ?? []) : [];
+  const curStr  = curKeys.length ? curKeys.map(k => KEY_LABELS[k]).join(' ') : '—';
+  const nxtStr  = nxtKeys.length ? nxtKeys.map(k => KEY_LABELS[k]).join(' ') : '—';
+  document.getElementById('step-keys').textContent = '当前: ' + curStr + '  |  下: ' + nxtStr;
+  document.getElementById('progress-fill').style.width =
+    total > 0 ? ((currentStep / total) * 100).toFixed(1) + '%' : '0%';
+
+  // prev/next disabled while Mode C is running
+  document.getElementById('btn-prev').disabled = modeCActive || currentStep <= 0;
+  document.getElementById('btn-next').disabled = modeCActive || currentStep >= total - 1;
+
+  updateGrid(curKeys, nxtKeys);
+  document.getElementById('flot-cur').textContent  = curKeys.length ? curStr : '—';
+  document.getElementById('flot-nxt').textContent  = nxtKeys.length ? nxtStr : '—';
+  document.getElementById('flot-step').textContent = (currentStep + 1) + '/' + total;
+}
+
+function prevStep() {
+  if (!scorePushed || currentStep <= 0 || modeCActive) return;
+  currentStep--;
+  updateStepUI();
+}
+
+function nextStep() {
+  if (!scorePushed || modeCActive) return;
+  const steps = allLogicalSteps();
+  if (currentStep >= steps.length - 1) return;
+  currentStep++;
+  updateStepUI();
+}
+
+// ── BLE ──────────────────────────────────────────────────────
+async function scanDevices() {
+  addLog('开始扫描…');
+  try {
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [
+        { namePrefix: 'zmk' }, { namePrefix: 'nice' }, { namePrefix: '3x5' },
+        { namePrefix: 'ZMK' }, { namePrefix: 'NICE' }
+      ],
+      optionalServices: [SVC, SVC_REVERSED]
+    });
+    if (device) {
+      const opt = document.createElement('option');
+      opt.value = device.id;
+      opt.textContent = device.name || 'Unknown';
+      const sel = document.getElementById('device-select');
+      sel.innerHTML = '';
+      sel.appendChild(opt);
+      sel.value = device.id;
+      await connectDevice(device);
+    }
+  } catch (e) {
+    if (e.name !== 'NotFoundError') addLog('扫描失败: ' + e.message);
+  }
+}
+
+async function connectSelected() {
+  const id = document.getElementById('device-select').value;
+  if (!id) return;
+  try {
+    const device = await navigator.bluetooth.getDevice({ id });
+    await connectDevice(device);
+  } catch (e) { addLog('连接失败: ' + e.message, 'miss'); }
+}
+
+async function connectDevice(device) {
+  if (gattServer?.connected) gattServer.disconnect();
+  btDevice = device;
+  device.addEventListener('gattserverdisconnected', onDisconnected);
+  try {
+    gattServer = await device.gatt.connect();
+    await discoverServices();
+    setStatus('已连接 ' + (device.name || '键盘'), 'connected');
+    document.getElementById('ble-name').textContent         = device.name || '';
+    document.getElementById('btn-connect').disabled         = true;
+    document.getElementById('btn-disconnect').disabled      = false;
+    document.getElementById('btn-start').disabled           = false;
+    document.getElementById('btn-push').disabled            = !scoreData;
+    addLog('已连接 GATT 服务');
+  } catch (e) {
+    setStatus('连接失败', '');
+    addLog('连接失败: ' + e.message, 'miss');
+  }
+}
+
+// Match a characteristic by its 16-bit UUID suffix (works for SIG-base 16-bit
+// UUIDs 0000be0x-... and any custom 128-bit base).
+function pickChrc(chrcs, u16) {
+  return chrcs.find(c => c.uuid.toLowerCase().endsWith(u16)) || null;
+}
+
+async function discoverServices() {
+  const allSvcs = await gattServer.getPrimaryServices();
+  const svc = allSvcs.find(s => s.uuid.toLowerCase() === SVC.toLowerCase()
+                                || s.uuid.toLowerCase() === SVC_REVERSED.toLowerCase());
+  if (!svc) {
+    const found = allSvcs.map(s => s.uuid).join(', ') || '(无)';
+    addLog('未找到自定义 GATT 服务 — 已发现: ' + found, 'miss');
+    addLog('若列表里只有标准 HID/电池等服务，说明键盘跑的是 basic-v1 标准 ZMK，需先烧录含 Mode C 的固件', 'info');
+    throw new Error('custom service not found');
+  }
+  addLog('发现服务: ' + svc.uuid);
+  const chrcs = await svc.getCharacteristics();
+  if (!chrcs.length) throw new Error('服务下无特征');
+
+  chrScore    = pickChrc(chrcs, 'be01');
+  chrControl  = pickChrc(chrcs, 'be02');
+  chrKeypress = pickChrc(chrcs, 'be03');
+  chrStatus   = pickChrc(chrcs, 'be04');
+  chrEvents   = pickChrc(chrcs, 'be05');
+  ['be01','be02','be03','be04','be05'].forEach(n => {
+    if (!pickChrc(chrcs, n)) addLog('未找到特征 ' + n.toUpperCase() + '（固件可能未实现）', 'miss');
+  });
+
+  if (chrStatus) {
+    try { await chrStatus.startNotifications(); } catch (e) {}
+    chrStatus.addEventListener('characteristicvaluechanged', onStatus);
+  }
+  if (chrEvents) {
+    try { await chrEvents.startNotifications(); } catch (e) {}
+    chrEvents.addEventListener('characteristicvaluechanged', onEvents);
+  }
+  addLog('已订阅 Status + Events 通知');
+}
+
+function onStatus(ev) {
+  const v = ev.target.value;
+  if (v.byteLength >= 8) {
+    const dv   = new DataView(v.buffer, v.byteOffset, 8);
+    const step = dv.getUint16(6, true);
+    if (step !== currentStep && step < totalSteps) {
+      currentStep = step;
+      updateStepUI();
+    }
+  }
+}
+
+function onEvents(ev) {
+  const v = ev.target.value;
+  if (v.byteLength < 4) return;
+  const dv   = new DataView(v.buffer, v.byteOffset, 4);
+  const evt  = dv.getUint8(0);
+  const key  = dv.getUint8(1);
+  const step = dv.getUint16(2, true);
+  const NAMES = { 1: 'HIT', 2: 'MISS', 3: 'TIMEOUT', 4: 'DONE' };
+  const name  = NAMES[evt] || '0x' + evt.toString(16).padStart(2, '0');
+  const kStr  = key ? (KEY_LABELS[key] || key) : '—';
+  const cls   = { 1: 'hit', 2: 'miss', 3: 'timeout', 4: 'done' }[evt] || 'info';
+  addLog(name + '  key=' + kStr + '  step=' + (step + 1), cls);
+  if (evt === 1) { currentStep = step + 1; updateStepUI(); }
+  if (evt === 4) { currentStep = 0; modeCActive = false; updateStepUI(); }
+}
+
+function onDisconnected() {
+  setStatus('未连接', '');
+  modeCActive = false;
+  document.getElementById('btn-connect').disabled    = false;
+  document.getElementById('btn-disconnect').disabled = true;
+  document.getElementById('btn-start').disabled      = true;
+  document.getElementById('btn-stop').disabled       = true;
+  addLog('蓝牙断开', 'info');
+}
+
+async function disconnect() {
+  if (gattServer?.connected) gattServer.disconnect();
+  if (btDevice) await btDevice.forget();
+  gattServer = null; btDevice = null;
+  onDisconnected();
+}
+
+// ── GATT helpers ─────────────────────────────────────────────
+async function writeCtrl(data) {
+  if (!chrControl) throw new Error('Control 特征未就绪');
+  await chrControl.writeValue(new Uint8Array(data));
+}
+
+// ── Score loading ────────────────────────────────────────────
+function loadScoreFile(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      scoreData   = JSON.parse(e.target.result);
+      scorePushed = false;
+      document.getElementById('score-name').textContent         = file.name;
+      document.getElementById('score-loaded').style.display     = '';
+      const steps = allLogicalSteps();
+      let totalKeys = 0;
+      steps.forEach(s => { totalKeys += (s.keys || []).length; });
+      totalSteps = steps.length;
+      setMeta(scoreData.pages?.length ?? 0, totalSteps, totalKeys);
+      document.getElementById('btn-push').disabled = !gattServer;
+      addLog('已加载 ' + file.name + ' (' + totalSteps + '步/' + totalKeys + '键)');
+      currentStep = 0;
+      updateStepUI();
+    } catch (err) { addLog('JSON 解析失败: ' + err.message, 'miss'); }
+  };
+  reader.readAsText(file);
+}
+
+// ── Push all logical steps to keyboard ───────────────────────
+// Each logical step → 1 or more PUSH commands (chord = multiple keys, same delta).
+// delta = ms since previous logical step.
+// key=0 → rest / time-pass (no LED, only advances the keyboard's own clock).
+async function pushAllSteps() {
+  if (!gattServer || !scoreData) {
+    addLog('请先连接蓝牙并加载谱面', 'miss'); return;
+  }
+  const btn = document.getElementById('btn-push');
+  btn.disabled = true; btn.textContent = '推送中…';
+  addLog('开始推送谱面…');
+  try {
+    // CLEAR staging buffer
+    await writeCtrl(new Uint8Array([0x20]));
+    await sleep(50);
+
+    const steps    = allLogicalSteps();
+    const STEP_MS  = 500;  // nominal beat for image-score (no real timing)
+    const packed   = [];
+
+    steps.forEach((step, idx) => {
+      const keys  = step.keys || [];
+      const delta = idx === 0 ? 0 : STEP_MS;
+      if (keys.length === 0) {
+        // Rest: advance keyboard clock, no LED
+        packed.push({ delta, key: 0, duration: 300 });
+      } else {
+        keys.forEach((key, ki) => {
+          // First key of step → delta; chord keys → delta=0 (same moment)
+          packed.push({ delta: ki === 0 ? delta : 0, key, duration: 400 });
+        });
+      }
+    });
+
+    addLog('推送 ' + packed.length + ' 条记录（' + steps.length + ' 步）…');
+
+    for (const s of packed) {
+      const buf = new ArrayBuffer(5);
+      const dv  = new DataView(buf);
+      dv.setUint8(0, CMD_PUSH);
+      dv.setUint16(1, s.delta,   true);  // little-endian
+      dv.setUint8(3, s.key);
+      dv.setUint8(4, s.duration);
+      await writeCtrl(new Uint8Array(buf));
+      await sleep(5);
+    }
+
+    scorePushed = true;
+    currentStep = 0;
+    updateStepUI();
+    addLog('推送完成: ' + packed.length + ' 条 / ' + steps.length + ' 步', 'hit');
+    btn.textContent = '已推送 &#10004;';
+    document.getElementById('btn-start').disabled = false;
+    document.getElementById('btn-prev').disabled  = false;
+    document.getElementById('btn-next').disabled  = false;
+  } catch (err) {
+    addLog('推送失败: ' + err.message, 'miss');
+    btn.disabled = false; btn.textContent = '&#128229; 推送谱面';
+  }
+}
+
+// ── Mode C ───────────────────────────────────────────────────
+async function modeCStart() {
+  if (!gattServer) { addLog('未连接', 'miss'); return; }
+  try {
+    const buf = new ArrayBuffer(3);
+    const dv  = new DataView(buf);
+    dv.setUint8(0, CMD_START);
+    dv.setUint16(1, totalSteps, true);
+    await writeCtrl(new Uint8Array(buf));
+    setStatus('引导弹奏中…', 'playing');
+    modeCActive = true;
+    document.getElementById('btn-start').disabled = true;
+    document.getElementById('btn-stop').disabled  = false;
+    document.getElementById('btn-prev').disabled  = true;
+    document.getElementById('btn-next').disabled  = true;
+    addLog('Mode C START (' + totalSteps + ' 步)', 'hit');
+  } catch (e) { addLog('START 失败: ' + e.message, 'miss'); }
+}
+
+async function modeCStop() {
+  if (!gattServer) return;
+  try {
+    await writeCtrl(new Uint8Array([CMD_STOP]));
+    setStatus('已连接 ' + (btDevice?.name || ''), 'connected');
+    modeCActive = false;
+    document.getElementById('btn-start').disabled = false;
+    document.getElementById('btn-stop').disabled  = true;
+    document.getElementById('btn-prev').disabled  = currentStep <= 0;
+    document.getElementById('btn-next').disabled  = currentStep >= totalSteps - 1;
+    addLog('Mode C STOP');
+    currentStep = 0;
+    updateStepUI();
+  } catch (e) { addLog('STOP 失败: ' + e.message, 'miss'); }
+}
+
+// ── Floating overlay ─────────────────────────────────────────
+function toggleOverlay() {
+  overlayVisible = !overlayVisible;
+  document.getElementById('floating-overlay').classList.toggle('visible', overlayVisible);
+  document.getElementById('btn-overlay').classList.toggle('primary', overlayVisible);
+  if (overlayVisible) updateStepUI();
+}
+
+// ── Misc ─────────────────────────────────────────────────────
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// ── Init ─────────────────────────────────────────────────────
+setStatus('未连接', '');
+addLog('等待连接蓝牙键盘…');
+</script>
+</body>
+</html>

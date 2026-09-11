@@ -1,0 +1,69 @@
+{
+    "format_version":  1,
+    "id":  "mgm_example_15key",
+    "name":  "MGM 15-key Example",
+    "keyCount":  15,
+    "fallbackInstrumentId":  "sky_piano",
+    "samples":  {
+                    "1":  {
+                              "path":  "samples/1.wav",
+                              "noteName":  "C4"
+                          },
+                    "2":  {
+                              "path":  "samples/2.wav",
+                              "noteName":  "D4"
+                          },
+                    "3":  {
+                              "path":  "samples/3.wav",
+                              "noteName":  "E4"
+                          },
+                    "4":  {
+                              "path":  "samples/4.wav",
+                              "noteName":  "F4"
+                          },
+                    "5":  {
+                              "path":  "samples/5.wav",
+                              "noteName":  "G4"
+                          },
+                    "6":  {
+                              "path":  "samples/6.wav",
+                              "noteName":  "A4"
+                          },
+                    "7":  {
+                              "path":  "samples/7.wav",
+                              "noteName":  "B4"
+                          },
+                    "8":  {
+                              "path":  "samples/8.wav",
+                              "noteName":  "C5"
+                          },
+                    "9":  {
+                              "path":  "samples/9.wav",
+                              "noteName":  "D5"
+                          },
+                    "10":  {
+                               "path":  "samples/10.wav",
+                               "noteName":  "E5"
+                           },
+                    "11":  {
+                               "path":  "samples/11.wav",
+                               "noteName":  "F5"
+                           },
+                    "12":  {
+                               "path":  "samples/12.wav",
+                               "noteName":  "G5"
+                           },
+                    "13":  {
+                               "path":  "samples/13.wav",
+                               "noteName":  "A5"
+                           },
+                    "14":  {
+                               "path":  "samples/14.wav",
+                               "noteName":  "B5"
+                           },
+                    "15":  {
+                               "path":  "samples/15.wav",
+                               "noteName":  "C6"
+                           }
+                }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "光遇琴谱引导",
+  "short_name": "琴谱引导",
+  "description": "ZMK 3x5 蓝牙键盘 · 引导弹奏模式",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f0f1a",
+  "theme_color": "#0f0f1a",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

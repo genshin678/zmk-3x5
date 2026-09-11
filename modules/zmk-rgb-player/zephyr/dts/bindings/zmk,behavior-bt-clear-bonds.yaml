@@ -1,0 +1,3 @@
+description: Clear all BLE bonds (U+M+O+. combo) to restore discoverable advertising
+compatible: zmk,behavior-bt-clear-bonds
+binding-cells: []

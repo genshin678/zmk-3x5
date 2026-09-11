@@ -1,0 +1,7 @@
+﻿config ZMK_RGBEFFECT
+    bool "ZMK RGB Player custom module"
+    default y
+    help
+      Enables the zmk-rgb-player module: per-pixel LED control, RGB
+      effects, score playback engine, custom BLE GATT service, USB
+      CDC debug console, and DFU trigger.

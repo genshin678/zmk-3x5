@@ -4,9 +4,17 @@ manifest:
   remotes:
     - name: zmkfirmware
       url-base: https://github.com/zmkfirmware
+    - name: zmk-rgb-player
+      url-base: https://github.com/genshin678
   projects:
     - name: zmk
       remote: zmkfirmware
       import: app/west.yml
+    # Local sibling module (zmk-rgb-player) - referenced by relative path
+    - name: zmk-rgb-player
+      path: modules/zmk-rgb-player
+      revision: main
+      userdata:
+        local: true
   self:
     path: config

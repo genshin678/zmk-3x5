@@ -5,11 +5,14 @@
  * ZMK 3x5 Bluetooth Keyboard Shield
  * Board: nice!nano / Pro Micro (NRF52840)
  * Matrix: 3 rows x 5 columns, ROW2COL diode orientation (anode→Row, cathode→Col)
- * Row pins: D0, D1, D2 (now driven outputs)
- * Col pins: D3, D4, D5, D6, D7 (now sensed inputs, pulled down)
+ * Row pins: D0, D1, D2 (driven outputs)
+ * Col pins: D3, D4, D5, D6, D7 (sensed inputs, pulled down)
  * NOTE: PCB column bus is physically mirrored (leftmost key → D7/col4),
  * so the transform map reverses each row to keep keymap order YUIOP/HJKL;/NM,.
- * RGB: WS2812B on D8 (P1.04), 15 LEDs (one per key).
+ *
+ * RGB: WS2812B on D8 (P1.04) via SPI3 bitbang.
+ *   P1.04 is SPI3 MOSI on nRF52840.  The worldsemi,ws2812-spi driver
+ *   reuses the SPI peripheral and bitbangs the WS2812B timing.
  */
 
 #include <dt-bindings/zmk/matrix_transform.h>
@@ -19,12 +22,6 @@
         zmk,kscan = &kscan0;
         zmk,matrix-transform = &default_transform;
         zmk,led-strip = &led_strip;
-    };
-
-    led_strip: led_strip {
-        compatible = "ws2812,ws2812_rpi_pico_pio";
-        pin = <&pro_micro 8 (GPIO_ACTIVE_HIGH)>;
-        num-leds = <15>;
     };
 
     kscan0: kscan {
@@ -56,5 +53,37 @@
             RC(1,4) RC(1,3) RC(1,2) RC(1,1) RC(1,0)
             RC(2,4) RC(2,3) RC(2,2) RC(2,1) RC(2,0)
         >;
+    };
+};
+
+/ {
+    /* Custom pinctrl for SPI3: only MOSI (P1.04 = D8) is used by WS2812B.
+     * SCK / MISO / CS are not connected but the SPI peripheral still
+     * wants them initialised to a valid (low-power) state. */
+    pinctrl: pinctrl {
+        spi3_ws2812_default: spi3_ws2812_default {
+            group1 {
+                psels = <NRF_PSEL(SPIM_MOSI, 1, 4)>;
+            };
+            group2 {
+                psels = <NRF_PSEL(SPIM_SCK, 0, 26)>,
+                        <NRF_PSEL(SPIM_MISO, 0, 27)>,
+                        <NRF_PSEL(SPIM_CSN, 0, 12)>;
+            };
+        };
+    };
+};
+
+&spi3 {
+    status = "okay";
+    pinctrl-0 = <&spi3_ws2812_default>;
+    pinctrl-names = "default";
+
+    led_strip: ws2812@0 {
+        compatible = "worldsemi,ws2812-spi";
+        reg = <0>;
+        spi-max-frequency = <4000000>;
+        chain-length = <15>;
+        color-mapping = "GRB";
     };
 };

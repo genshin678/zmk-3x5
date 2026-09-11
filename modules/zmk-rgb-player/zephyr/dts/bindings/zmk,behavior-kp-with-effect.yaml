@@ -1,0 +1,8 @@
+description: >
+  Type a key AND trigger the ripple effect.
+  param1: HID scancode (e.g. 0x1C for Y)
+  param2: key index 0-14 (for ripple origin), or -1 to skip effect
+compatible: zmk,behavior-kp-with-effect
+binding-cells:
+  - scancode
+  - key-index

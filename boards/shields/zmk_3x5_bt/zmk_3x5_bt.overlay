@@ -16,7 +16,6 @@
  */
 
 #include <dt-bindings/zmk/matrix_transform.h>
-#include <zephyr/dt-bindings/pinctrl/nrf-pinctrl.h>
 
 / {
     chosen {
@@ -64,12 +63,17 @@
     pinctrl: pinctrl {
         spi3_ws2812_default: spi3_ws2812_default {
             group1 {
-                psels = <NRF_PSEL(SPIM_MOSI, 1, 4)>;
+                /* P1.04 = D8, SPIM3.MOSI function. PSEL encoding:
+                 *   bits 0-4 = pin, bits 5-7 = port, bits 8-12 = function.
+                 *   0x224 = (2<<8) | (1<<5) | 4 = MOSI, port 1, pin 4. */
+                psels = <0x224>;
             };
             group2 {
-                psels = <NRF_PSEL(SPIM_SCK, 0, 26)>,
-                        <NRF_PSEL(SPIM_MISO, 0, 27)>,
-                        <NRF_PSEL(SPIM_CSN, 0, 12)>;
+                /* SCK P0.26, MISO P0.27, CSN P0.12 — chosen as harmless
+                 * low-power defaults; the WS2812B driver only toggles MOSI. */
+                psels = <0x11A>,
+                        <0x31B>,
+                        <0x40C>;
             };
         };
     };

@@ -11,7 +11,7 @@
 #include <zephyr/logging/log.h>
 #include <zmk_rgbeffect/led_pixel.h>
 
-LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_LOG_LEVEL);
+LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
 static const struct device *strip;
 static struct led_rgb frame[LED_PIXEL_COUNT];

@@ -17,7 +17,7 @@
 #include <drivers/behavior.h>
 #include <zmk_rgbeffect/rgb_control.h>
 
-LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_LOG_LEVEL);
+LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
 static uint8_t held_mask;          /* bit0=Y, bit1=P */
 static struct k_work_delayable work;

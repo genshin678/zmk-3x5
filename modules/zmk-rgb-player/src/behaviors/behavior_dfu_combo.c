@@ -14,7 +14,7 @@
 #include <hal/nrf_power.h>
 #include <drivers/behavior.h>
 
-LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_LOG_LEVEL);
+LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
 static uint8_t held_mask;
 static struct k_work_delayable work;

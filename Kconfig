@@ -5,3 +5,15 @@ config ZMK_RGBEFFECT
       Enables the zmk-rgb-player module: per-pixel LED control, RGB
       effects, score playback engine, custom BLE GATT service, USB
       CDC debug console, and DFU trigger.
+
+if ZMK_RGBEFFECT
+
+config ZMK_RGB_PLAYER_LOG_LEVEL
+    int "ZMK RGB Player log level"
+    default 4
+    range 0 4
+    help
+      Log level for the zmk-rgb-player module. 0=off, 1=err, 2=wrn,
+      3=inf, 4=dbg. Used by LOG_MODULE_DECLARE/REGISTER macros.
+
+endif # ZMK_RGBEFFECT

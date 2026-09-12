@@ -18,7 +18,7 @@
 #include <zmk_rgbeffect/effects.h>
 #include <zmk_rgbeffect/mode_c.h>
 
-LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_LOG_LEVEL);
+LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
 #define SCORE_STAGING_BYTES  (16 * 1024)
 static uint8_t   staging[SCORE_STAGING_BYTES];

@@ -16,7 +16,7 @@
 #include <zmk_rgbeffect/rgb_control.h>
 #include <zmk_rgbeffect/effects.h>
 
-LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_LOG_LEVEL);
+LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
 static struct k_work_delayable effects_work;
 static rgb_effect_t active = RGB_EFFECT_OFF;

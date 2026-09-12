@@ -21,7 +21,7 @@
 #include <zmk_rgbeffect/rgb_control.h>
 #include <zmk_rgbeffect/dfu.h>
 
-LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_LOG_LEVEL);
+LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
 #define LINE_BUF_MAX  128
 static char line_buf[LINE_BUF_MAX];

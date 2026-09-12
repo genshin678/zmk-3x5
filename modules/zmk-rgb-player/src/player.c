@@ -27,7 +27,7 @@
 #include <zmk_rgbeffect/player.h>
 #include <zmk_rgbeffect/effects.h>
 
-LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_LOG_LEVEL);
+LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
 /* Per-key scancode table. Indexed by keyIndex 0..14. */
 static const uint8_t KEY_SCANCODE[15] = {

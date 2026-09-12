@@ -1,3 +1,3 @@
-description: DFU combo: two keys held 3s → reboot to bootloader
+description: 'DFU combo: two keys held 3s → reboot to bootloader'
 compatible: zmk,behavior-dfu-combo
 binding-cells: []

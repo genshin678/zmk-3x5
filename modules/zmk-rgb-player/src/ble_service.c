@@ -207,18 +207,11 @@ BT_GATT_SERVICE_DEFINE(zmk_player_svc,
 );
 
 int ble_service_init(void) {
-    /* CONFIG_BT_GATT_DYNAMIC_DB=y (ZMK default): services from
-     * BT_GATT_SERVICE_DEFINE are NOT auto-registered, so we must register
-     * explicitly or the PWA will never see our custom service.
-     *
-     * Zephyr 3.5 API: bt_gatt_service_register() (not bt_gatt_register,
-     * which is a 3.6+ rename). */
-    int rc = bt_gatt_service_register(&zmk_player_svc);
-    if (rc < 0) {
-        LOG_ERR("player: failed to register GATT service: %d", rc);
-    } else {
-        LOG_INF("player: GATT service registered");
-    }
+    /* GATT service is statically declared with BT_GATT_SERVICE_DEFINE and
+     * auto-registered at boot (CONFIG_BT_GATT_DYNAMIC_DB=n). No manual
+     * call needed — and indeed impossible: with DYNAMIC_DB=n the static
+     * macro emits a `struct bt_gatt_service_static`, which doesn't match
+     * the `struct bt_gatt_service *` arg of bt_gatt_service_register. */
     k_work_init_delayable(&keypress_up_work, keypress_up_work_fn);
     status_rebuild();
     return 0;

@@ -11,4 +11,7 @@ config ZMK_KEYBOARD_NAME
 config LED_STRIP
     default y
 
+config SPI
+    default y
+
 endif

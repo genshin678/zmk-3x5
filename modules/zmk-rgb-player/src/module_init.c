@@ -6,6 +6,7 @@
  * single APPLICATION-level SYS_INIT. Idempotent; safe if others also init.
  */
 #include <zephyr/kernel.h>
+#include <zephyr/init.h>
 #include <zephyr/logging/log.h>
 #include <zmk_rgbeffect/rgb_control.h>
 #include <zmk_rgbeffect/effects.h>

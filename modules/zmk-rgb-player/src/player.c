@@ -68,7 +68,6 @@ static int64_t paused_offset_ms = 0;
 static struct k_work_delayable play_work;
 static atomic_t play_tick_running;
 
-static struct led_rgb hsv_to_rgb(uint16_t h, uint8_t s, uint8_t v);
 static void fire_note(uint8_t key_index_0_14, uint16_t duration_ms);
 static void schedule_next_tick(void);
 
@@ -113,7 +112,9 @@ static void play_tick(struct k_work *work) {
 }
 
 static void schedule_next_tick(void) {
-    if (!atomic_test_and_set(&play_tick_running)) {
+    /* Use bit 0 as the "tick work already initialized" flag.
+     * Zephyr 3.5 atomic API is per-bit, not whole-word. */
+    if (!atomic_test_and_set_bit(&play_tick_running, 0)) {
         k_work_init_delayable(&play_work, play_tick);
     }
     k_work_schedule(&play_work, K_MSEC(5));

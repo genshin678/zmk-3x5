@@ -1,4 +1,4 @@
-﻿config ZMK_RGBEFFECT
+config ZMK_RGBEFFECT
     bool "ZMK RGB Player custom module"
     default y
     help

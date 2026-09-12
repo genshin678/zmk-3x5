@@ -1,6 +1,3 @@
-# Copyright (c) 2026
-# SPDX-License-Identifier: MIT
-
 if SHIELD_ZMK_3X5_BT
 
 config ZMK_KEYBOARD_NAME
@@ -11,7 +8,7 @@ config ZMK_KEYBOARD_NAME
 config LED_STRIP
     default y
 
-config WS2812_STRIP
+config WS2812_STRIP_SPI
     default y
 
 endif

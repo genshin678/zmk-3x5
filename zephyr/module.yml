@@ -1,3 +1,7 @@
+name: zmk-rgb-player
 build:
+  cmake: modules/zmk-rgb-player
+  kconfig: modules/zmk-rgb-player/zephyr/Kconfig
   settings:
     board_root: .
+    dts_root: modules/zmk-rgb-player/zephyr

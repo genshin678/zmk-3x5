@@ -14,6 +14,7 @@
 
 #include <zephyr/device.h>
 #include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
 #include <drivers/behavior.h>
 #include <zmk_rgbeffect/rgb_control.h>
 

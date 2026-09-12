@@ -10,6 +10,7 @@
 
 #include <zephyr/device.h>
 #include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
 #include <zephyr/sys/reboot.h>
 #include <hal/nrf_power.h>
 #include <drivers/behavior.h>

@@ -10,6 +10,7 @@
 
 #include <dt-bindings/led/led.h>
 #include <dt-bindings/zmk/matrix_transform.h>
+#include <zephyr/dt-bindings/pinctrl/nrf-pinctrl.h>
 
 
 / {
@@ -53,33 +54,35 @@
     };
 
 
+    /*
+     * SPI3 MOSI:
+     * nRF52840 P1.04 = D8
+     * WS2812B is write-only,
+     * only MOSI is required.
+     */
+
     spi3_ws2812_default: spi3_ws2812_default {
         group1 {
-            psels = <0x224>;
-        };
-
-        group2 {
-            psels = <0x11A>, <0x21B>, <0x40C>;
+            psels = <NRF_PSEL(SPIM_MOSI, 1, 4)>;
         };
     };
 
 
     spi3_ws2812_sleep: spi3_ws2812_sleep {
         group1 {
-            psels = <0x224>,
-                    <0x11A>,
-                    <0x21B>,
-                    <0x40C>;
-
+            psels = <NRF_PSEL(SPIM_MOSI, 1, 4)>;
             low-power-enable;
         };
     };
+
 };
 
 
+/*
+ * SPI3 WS2812B driver
+ */
 
 &spi3 {
-    compatible = "nordic,nrf-spim";
     status = "okay";
 
     pinctrl-0 = <&spi3_ws2812_default>;
@@ -92,16 +95,26 @@
 
 
     led_strip: ws2812@0 {
+
         compatible = "worldsemi,ws2812-spi";
 
         reg = <0>;
 
         spi-max-frequency = <4000000>;
 
+
+        /*
+         * WS2812B timing:
+         * 1 bit -> 0x70
+         * 0 bit -> 0x40
+         */
+
         spi-one-frame = <0x70>;
         spi-zero-frame = <0x40>;
 
+
         chain-length = <15>;
+
 
         color-mapping =
             <LED_COLOR_ID_GREEN

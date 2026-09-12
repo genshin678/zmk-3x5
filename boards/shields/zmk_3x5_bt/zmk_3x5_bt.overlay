@@ -79,41 +79,29 @@
 
 
 &spi3 {
-
     compatible = "nordic,nrf-spim";
-
     status = "okay";
-
 
     pinctrl-0 = <&spi3_ws2812_default>;
     pinctrl-1 = <&spi3_ws2812_sleep>;
-
     pinctrl-names = "default", "sleep";
 
 
+    #address-cells = <1>;
+    #size-cells = <0>;
+
+
     led_strip: ws2812@0 {
-
         compatible = "worldsemi,ws2812-spi";
-
 
         reg = <0>;
 
         spi-max-frequency = <4000000>;
 
-
-        /*
-         * WS2812B timing
-         */
         spi-one-frame = <0x70>;
         spi-zero-frame = <0x40>;
 
-
-        /*
-         * 15 LEDs
-         * 5 columns x 3 rows
-         */
         chain-length = <15>;
-
 
         color-mapping =
             <LED_COLOR_ID_GREEN

@@ -19,7 +19,7 @@ typedef enum {
 #define LED_PIXEL_COUNT 15
 #endif
 
-void effects_init(void);
+int  effects_init(void);
 void effects_tick_start(void);
 void effects_tick_stop(void);
 void effects_set_active(rgb_effect_t e);

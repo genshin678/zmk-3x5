@@ -11,6 +11,7 @@
  *   EFFECT <0-5>
  *   REBOOT DFU
  */
+#include <stdlib.h>                    /* atoi() */
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/devicetree.h>

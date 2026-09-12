@@ -12,6 +12,7 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+#include <zephyr/drivers/led_strip.h>   /* struct led_rgb, color order */
 
 #ifndef LED_PIXEL_COUNT
 #define LED_PIXEL_COUNT 15

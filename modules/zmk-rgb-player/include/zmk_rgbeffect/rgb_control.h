@@ -8,7 +8,7 @@
 /* Brightness loop direction for Y+P simultaneous hold. */
 typedef enum { BRI_IDLE, BRI_UP, BRI_DOWN } bri_loop_t;
 
-void   rgb_control_init(void);
+int    rgb_control_init(void);
 
 /* Brightness */
 void   rgb_control_set_brightness(uint8_t v);

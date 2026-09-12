@@ -44,9 +44,9 @@ static void keypress_up_work_fn(struct k_work *w) {
     }
 }
 
-static void gatt_notify_u16(uint16_t chrc_uuid, const void *data, uint16_t len) {
+static void gatt_notify_u16(const struct bt_uuid *chrc_uuid, const void *data, uint16_t len) {
     const struct bt_gatt_attr *attr =
-        bt_gatt_find_by_uuid(NULL, 0, BT_UUID_DECLARE_16(chrc_uuid));
+        bt_gatt_find_by_uuid(NULL, 0, chrc_uuid);
     if (attr == NULL) return;
     bt_gatt_notify(NULL, attr, data, len);
 }

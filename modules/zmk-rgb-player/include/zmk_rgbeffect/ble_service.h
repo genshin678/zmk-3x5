@@ -27,11 +27,11 @@
     0x8d, 0x1d, 0x7a, 0x6f, 0x5c, 0x3b, 0x2a, 0x10)
 
 /* 16-bit characteristic UUIDs (unique per characteristic). */
-#define ZMK_PLAYER_CHRC_SCORE      0xBE01  /* WRITE  */
-#define ZMK_PLAYER_CHRC_CONTROL    0xBE02  /* WRITE  */
-#define ZMK_PLAYER_CHRC_KEYPRESS   0xBE03  /* WRITE  */
-#define ZMK_PLAYER_CHRC_STATUS     0xBE04  /* READ+NOTIFY */
-#define ZMK_PLAYER_CHRC_EVENTS     0xBE05  /* NOTIFY (Mode C events) */
+#define ZMK_PLAYER_CHRC_SCORE      BT_UUID_DECLARE_16(0xBE01)  /* WRITE  */
+#define ZMK_PLAYER_CHRC_CONTROL    BT_UUID_DECLARE_16(0xBE02)  /* WRITE  */
+#define ZMK_PLAYER_CHRC_KEYPRESS   BT_UUID_DECLARE_16(0xBE03)  /* WRITE  */
+#define ZMK_PLAYER_CHRC_STATUS     BT_UUID_DECLARE_16(0xBE04)  /* READ+NOTIFY */
+#define ZMK_PLAYER_CHRC_EVENTS     BT_UUID_DECLARE_16(0xBE05)  /* NOTIFY (Mode C events) */
 
 /* Mode C (Assisted Play-Along) control commands (in the CONTROL characteristic). */
 #define MODE_C_START  0x30  /* + u16 note_count */

@@ -6,4 +6,12 @@ if SHIELD_ZMK_3X5_BT
 config ZMK_KEYBOARD_NAME
     default "ZMK 3x5 BT"
 
+
+# RGB WS2812B support
+config LED_STRIP
+    default y
+
+config WS2812_STRIP
+    default y
+
 endif

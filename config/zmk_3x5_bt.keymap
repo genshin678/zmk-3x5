@@ -27,8 +27,15 @@
  *   0 OFF / 1 静态单色 / 2 单色呼吸 / 3 彩虹循环 / 4 单点亮 / 5 星光闪烁 / 6 波纹
  *
  * === Binding cell convention ===
- *   keyIndex = position + 1 (1-based, mapping to idx 0–14)
- *   Y=1 U=2 I=3 O=4 P=5 / H=6 J=7 K=8 L=9 ;=10 / N=11 M=12 ,=13 .=14 /=15
+ *   &kp_we <HID scancode> <led idx 0-14>
+ *   The second cell is a **0-based** LED/ripple index, i.e. exactly the keymap
+ *   position (0..14). It is NOT the 1-based keyIndex used by the JSON scores.
+ *   (Scores store keyIndex 1..15; player.c and mode_c.c subtract 1 before
+ *    calling effects_on_key_down(). The keymap must therefore pass 0..14.)
+ *
+ *   pos  0   1   2   3   4   5   6   7   8   9   10  11  12  13  14
+ *   key  Y   U   I   O   P   H   J   K   L   ;   N   M   ,   .   /
+ *   keyIndex (JSON, 1-based)  1..15  = pos + 1
  *   USB HID scancodes: Y=0x1C U=0x18 I=0x0C O=0x12 P=0x13
  *                      H=0x0B J=0x0D K=0x0E L=0x0F ;=0x33
  *                      N=0x11 M=0x10 ,=0x36 .=0x37 /=0x38
@@ -47,10 +54,13 @@
             /* pos: 0    1    2    3    4    5    6    7    8    9    10   11   12   13   14 */
             /*       Y    U    I    O    P    H    J    K    L    ;    N    M    ,    .    /   */
             /*      ki1  ki2  ki3  ki4  ki5  ki6  ki7  ki8  ki9  ki10 ki11 ki12 ki13 ki14 ki15 */
+            /* NOTE: all 15 keys must type their letter. The corner/side keys are
+             * ALSO combo triggers, but a ZMK combo already suppresses the member
+             * keys while it is active, so they must NOT be bound to &none. */
             bindings = <
-                &none  &kp_we 0x18 2  &kp_we 0x0C 3  &kp_we 0x12 4  &none
-                &none  &kp_we 0x0D 7  &kp_we 0x0E 8  &kp_we 0x0F 9  &kp_we 0x33 10
-                &none  &kp_we 0x10 12 &kp_we 0x36 13 &kp_we 0x37 14 &none
+                &kp_we 0x1C 0  &kp_we 0x18 1  &kp_we 0x0C 2  &kp_we 0x12 3  &kp_we 0x13 4
+                &kp_we 0x0B 5  &kp_we 0x0D 6  &kp_we 0x0E 7  &kp_we 0x0F 8  &kp_we 0x33 9
+                &kp_we 0x11 10 &kp_we 0x10 11 &kp_we 0x36 12 &kp_we 0x37 13 &kp_we 0x38 14
             >;
         };
     };

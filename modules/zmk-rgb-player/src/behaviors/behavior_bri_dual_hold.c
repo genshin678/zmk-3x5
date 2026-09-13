@@ -1,14 +1,23 @@
 /*
  * behavior_bri_dual_hold.c - brightness loop when Y+P held together
  *
- * Bound to Y (pos 0) and P (pos 4) via held-combo in the keymap.
- * On press of either key:
- *   - schedule a 100ms delayed work
- *   - if the other key is already held -> work fires immediately
- * On release of either key: cancel the loop
+ * Bound to the Y+P combo (key-positions <0 4>) in the keymap.
  *
- * The combo suppresses the normal binding of BOTH keys while held,
- * so neither Y nor P sends a letter while adjusting brightness.
+ * IMPORTANT — how ZMK invokes a combo behavior:
+ *   A combo fires ONCE for the whole combo and ZMK passes
+ *   event.position = ZMK_VIRTUAL_KEY_POSITION_COMBO(idx), i.e. a *virtual*
+ *   position (keymap_len + combo index), NOT the physical key position.
+ *   The individual member keys' press events are consumed by the combo.
+ *   Therefore a per-physical-position held_mask (as an earlier revision used:
+ *   `held_mask |= (1 << event.position)` + `if (held_mask != 0x3)`) can never
+ *   work — the shift overflows a uint8_t and truncates to 0.
+ *   We simply track "the combo is currently held" with a bool.
+ *
+ * On combo press : schedule a 100 ms delay; if still held -> start the loop.
+ * On combo release: cancel the loop.
+ *
+ * The combo suppresses the normal binding of BOTH keys while held, so neither
+ * Y nor P sends a letter while adjusting brightness.
  */
 #define DT_DRV_COMPAT zmk_behavior_bri_dual_hold
 
@@ -20,28 +29,35 @@
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
-static uint8_t held_mask;          /* bit0=Y, bit1=P */
-static struct k_work_delayable work;
+static bool combo_held;
+static struct k_work_delayable bri_hold_work;
 
-static void fire_loop(struct k_work *work) {
-    if (held_mask != 0x3) return;
-    /* Both Y and P are held: start the brightness loop (upwards). */
+static void fire_loop(struct k_work *w) {
+    ARG_UNUSED(w);
+    if (!combo_held) {
+        return;
+    }
+    /* Combo confirmed held: start the brightness loop (upwards). */
     rgb_control_bri_loop_start(BRI_UP);
 }
 
 static int on_pressed(struct zmk_behavior_binding *binding,
                       struct zmk_behavior_binding_event event) {
-    held_mask |= (1 << event.position);
-    k_work_init_delayable(&work, fire_loop);
-    k_work_schedule(&work, K_MSEC(100));
+    ARG_UNUSED(binding);
+    ARG_UNUSED(event);
+    combo_held = true;
+    k_work_init_delayable(&bri_hold_work, fire_loop);
+    k_work_schedule(&bri_hold_work, K_MSEC(100));
     return 0;
 }
 
 static int on_released(struct zmk_behavior_binding *binding,
                        struct zmk_behavior_binding_event event) {
-    held_mask &= ~(1 << event.position);
+    ARG_UNUSED(binding);
+    ARG_UNUSED(event);
+    combo_held = false;
     rgb_control_bri_loop_stop();
-    k_work_cancel_delayable(&work);
+    k_work_cancel_delayable(&bri_hold_work);
     return 0;
 }
 

@@ -1,10 +1,17 @@
 /*
  * behavior_dfu_combo.c - P+N held 3s -> reboot into UF2 bootloader
  *
- * Bound to P (pos 4) and N (pos 10) via held-combo.
- * On first press of either: schedule work for 3000ms.
- * On release of either before 3s: cancel.
- * On fire: write GPREGRET = 0x57 and reset.
+ * Bound to the P+N combo (key-positions <4 10>) in the keymap.
+ *
+ * ZMK fires a combo behavior once with a *virtual* event.position
+ * (ZMK_VIRTUAL_KEY_POSITION_COMBO), so the previous per-physical-position
+ * bitmask test (`held_mask != 0x3`) could never succeed — see
+ * behavior_bri_dual_hold.c for the full explanation. We track held state with
+ * a bool instead.
+ *
+ * On combo press  : schedule work for 3000 ms.
+ * On combo release: cancel (so a normal P+N tap does nothing).
+ * On fire         : write GPREGRET = 0x57 and reset into the bootloader.
  */
 #define DT_DRV_COMPAT zmk_behavior_dfu_combo
 
@@ -17,27 +24,34 @@
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
-static uint8_t held_mask;
-static struct k_work_delayable work;
+static bool combo_held;
+static struct k_work_delayable dfu_hold_work;
 
-static void fire_dfu(struct k_work *work) {
-    if (held_mask != 0x3) return;
+static void fire_dfu(struct k_work *w) {
+    ARG_UNUSED(w);
+    if (!combo_held) {
+        return;
+    }
     NRF_POWER->GPREGRET = 0x57;
     sys_reboot(SYS_REBOOT_WARM);
 }
 
 static int on_pressed(struct zmk_behavior_binding *binding,
                       struct zmk_behavior_binding_event event) {
-    held_mask |= (1 << event.position);
-    k_work_init_delayable(&work, fire_dfu);
-    k_work_schedule(&work, K_MSEC(3000));
+    ARG_UNUSED(binding);
+    ARG_UNUSED(event);
+    combo_held = true;
+    k_work_init_delayable(&dfu_hold_work, fire_dfu);
+    k_work_schedule(&dfu_hold_work, K_MSEC(3000));
     return 0;
 }
 
 static int on_released(struct zmk_behavior_binding *binding,
                        struct zmk_behavior_binding_event event) {
-    held_mask &= ~(1 << event.position);
-    k_work_cancel_delayable(&work);
+    ARG_UNUSED(binding);
+    ARG_UNUSED(event);
+    combo_held = false;
+    k_work_cancel_delayable(&dfu_hold_work);
     return 0;
 }
 

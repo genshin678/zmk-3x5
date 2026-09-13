@@ -95,8 +95,13 @@
     led_strip: ws2812@0 {
         compatible = "worldsemi,ws2812-spi";
 
-        /* Data input line. Required by the ZMK zephyr ws2812-spi binding. */
-        in-gpios = <&pro_micro 8 GPIO_ACTIVE_HIGH>;
+        /* NOTE: do NOT add an "in-gpios" property here. That property belongs
+         * to the GPIO backend (worldsemi,ws2812-gpio) only. The SPI backend
+         * (worldsemi,ws2812-spi) shifts data out over MOSI, so it declares no
+         * data-pin property, and adding one aborts the build with:
+         *   devicetree error: 'in-gpios' appears in .../ws2812@0 ...
+         *   but is not declared in 'properties:' in worldsemi,ws2812-spi.yaml
+         */
 
         /* SPI */
         reg = <0>; /* ignored, but required by the SPI device binding */

@@ -1,8 +1,12 @@
 /*
  * behavior_hue_dual_hold.c - hue loop when H+; held together
  *
- * Bound to H (pos 5) and ; (pos 9) via held-combo.
- * Same pattern as brightness dual-hold.
+ * Bound to the H+; combo (key-positions <5 9>) in the keymap.
+ * Same pattern as the brightness dual-hold: ZMK fires a combo behavior once
+ * with a *virtual* event.position, so we track "combo held" with a bool
+ * instead of a per-physical-position bitmask (see behavior_bri_dual_hold.c
+ * for the full explanation).
+ *
  * Direction: +8 deg per 100ms (clockwise).
  */
 #define DT_DRV_COMPAT zmk_behavior_hue_dual_hold
@@ -15,27 +19,34 @@
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
-static uint8_t held_mask;          /* bit0=H, bit1=SCLN */
-static struct k_work_delayable work;
+static bool combo_held;
+static struct k_work_delayable hue_hold_work;
 
-static void fire_loop(struct k_work *work) {
-    if (held_mask != 0x3) return;
+static void fire_loop(struct k_work *w) {
+    ARG_UNUSED(w);
+    if (!combo_held) {
+        return;
+    }
     rgb_control_hue_loop_start(+1);
 }
 
 static int on_pressed(struct zmk_behavior_binding *binding,
                       struct zmk_behavior_binding_event event) {
-    held_mask |= (1 << event.position);
-    k_work_init_delayable(&work, fire_loop);
-    k_work_schedule(&work, K_MSEC(100));
+    ARG_UNUSED(binding);
+    ARG_UNUSED(event);
+    combo_held = true;
+    k_work_init_delayable(&hue_hold_work, fire_loop);
+    k_work_schedule(&hue_hold_work, K_MSEC(100));
     return 0;
 }
 
 static int on_released(struct zmk_behavior_binding *binding,
                        struct zmk_behavior_binding_event event) {
-    held_mask &= ~(1 << event.position);
+    ARG_UNUSED(binding);
+    ARG_UNUSED(event);
+    combo_held = false;
     rgb_control_hue_loop_stop();
-    k_work_cancel_delayable(&work);
+    k_work_cancel_delayable(&hue_hold_work);
     return 0;
 }
 

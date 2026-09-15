@@ -140,16 +140,38 @@
          *   but is not declared in 'properties:' in worldsemi,ws2812-spi.yaml
          */
 
-        /* SPI */
-        reg = <0>; /* ignored, but required by the SPI device binding */
-        spi-max-frequency = <4000000>;
+        /* SPI
+         *
+         * Zephyr's ws2812_spi driver serialises ONE WS2812 bit into ONE FULL
+         * SPI BYTE (ws2812_spi_ser(): buf[i] = bit ? one_frame : zero_frame,
+         * 8 bytes per colour channel), so a pulse is 3 or 1 SPI bits wide:
+         *
+         *   clock    T1H = 3 bits    T0H = 1 bit       WS bit = 8 bits
+         *   4.0 MHz  0.75 us (ok)    0.25 us (at the  2.00 us
+         *                            datasheet MIN)
+         *   3.2 MHz  0.94 us (ok)    0.31 us (ok)     2.50 us   <- used here
+         *   WS2812B  0.65-0.95 us    0.25-0.55 us     >= 0.65 us
+         *
+         * 1-pulse: 0x70 = 0111_0000    0-pulse: 0x40 = 0100_0000
+         *
+         * WHY NOT 4 MHz: the data runs through U1 (TXS0102), whose high level
+         * is only pulled up by a ~10k internal resistor (plus a one-shot edge
+         * accelerator). Crossing the LED's input threshold costs ~100-150 ns
+         * on that line, which at 4 MHz eats the margin of a "1" bit
+         * (0.75 us -> effectively ~0.60-0.65 us, i.e. outside the 0.65 us
+         * minimum) and can flip a "1" to a "0". At 3.2 MHz the same "1" still
+         * measures ~0.80 us at the LED pin. If U1 is ever bypassed (P1.04 ->
+         * DIN through 33-100R), 4 MHz becomes safe again. */
+        spi-max-frequency = <3200000>;
 
-        /* WS2812B: one SPI frame = one WS2812 bit.
-         * 1-pulse (T1H≈0.7μs):  0x70 = 0111_0000
-         * 0-pulse (T0L≈0.35μs): 0x40 = 0100_0000
-         * (2 MHz SPI × 0.5 μs/bit ≈ WS2812 800 kHz) */
         spi-one-frame = <0x70>;
         spi-zero-frame = <0x40>;
+
+        /* Latch gap after each frame. The classic WS2812B needs > 50 us, but
+         * the newer WS2812B-V5 die needs >= 280 us before it latches, and this
+         * strip's exact variant is unknown. The board idles far longer than
+         * that between frames, so this is pure insurance. */
+        reset-delay = <300>;
 
         /* WS2812B */
         chain-length = <15>; /* 15 LEDs: 5 per row × 3 rows */

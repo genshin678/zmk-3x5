@@ -49,26 +49,79 @@ LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
  * it had at 10 ms. */
 #define EFFECTS_TICK_MS 20
 
-static struct k_work_delayable effects_work;
+/* ---------------------------------------------------------------- */
+/* the render tick: a DEDICATED THREAD, not the system workqueue     */
+/* ---------------------------------------------------------------- */
+/* This used to be a k_work_delayable - i.e. it ran on the SYSTEM WORKQUEUE,
+ * and ZMK runs the key-matrix scan on that same workqueue. Every render is
+ * led_pixel_update(): ONE synchronous ~1.2 ms 360-byte SPI burst (see the
+ * EFFECTS_TICK_MS note above), so each frame sat directly in front of the
+ * matrix scan and delayed input by up to a frame. At 20 ms that is ~6% of the
+ * input path's own thread spent pushing pixels.
+ *
+ * Nobody could notice while the strip was dark, which is why it survived
+ * several revisions: the engine was inert under
+ * CONFIG_ZMK_RGB_PLAYER_BRINGUP, and LATFIX had the strip thread switched off.
+ * The moment the engine went live again (USBRGB) the load became real - which
+ * is exactly why "the lights work now" and "input got slower" arrived in the
+ * same report.
+ *
+ * A dedicated thread at a priority BELOW the workqueue makes the ordering
+ * permanent: the workqueue outranks it, so a scan that becomes ready preempts
+ * a render in progress. Input can never wait on pixels again. (The bring-up
+ * read-out used the same reasoning - see the note in bringup.c on why both of
+ * its threads were kept off the system workqueue.)
+ *
+ * Priority 12 sits below every radio path and below btdiag's 11:
+ *   ZMK's BLE notify thread = 5    (CONFIG_ZMK_BLE_THREAD_PRIORITY)
+ *   Zephyr's BT host RX     = 8    (CONFIG_BT_RX_PRIO)
+ *   btdiag blue-LED probe   = 11
+ *   this render thread      = 12   <- below all of them
+ *   Zephyr's idle thread    = 15
+ * A 50 fps animation is the least urgent thing on the board. */
+#define EFFECTS_THREAD_PRIORITY 12
+#define EFFECTS_STACK_SIZE      1536
+
+K_THREAD_STACK_DEFINE(effects_stack, EFFECTS_STACK_SIZE);
+static struct k_thread effects_thread;
+
 static rgb_effect_t active = RGB_EFFECT_OFF;
 static int8_t active_key = -1;         /* for SINGLE_KEY effect */
 static bool player_takeover = false;
 static uint32_t tick_count = 0;
-static bool tick_running;
+static volatile bool tick_running;
 
-static void effects_tick(struct k_work *work);
+static void effects_render_frame(void);
+
+static void effects_thread_fn(void *p1, void *p2, void *p3) {
+    ARG_UNUSED(p1);
+    ARG_UNUSED(p2);
+    ARG_UNUSED(p3);
+
+    while (tick_running) {
+        effects_render_frame();
+        k_sleep(K_MSEC(EFFECTS_TICK_MS));
+    }
+}
 
 static void start_tick(void) {
     if (tick_running) return;
-    k_work_init_delayable(&effects_work, effects_tick);
-    k_work_schedule(&effects_work, K_MSEC(EFFECTS_TICK_MS));
     tick_running = true;
+    k_thread_create(&effects_thread, effects_stack,
+                    K_THREAD_STACK_SIZEOF(effects_stack),
+                    effects_thread_fn, NULL, NULL, NULL,
+                    EFFECTS_THREAD_PRIORITY, 0, K_NO_WAIT);
+    k_thread_name_set(&effects_thread, "rgb_eff");
 }
 
 static void stop_tick(void) {
     if (!tick_running) return;
-    k_work_cancel_delayable(&effects_work);
     tick_running = false;
+    /* Join, so that when this returns the thread is gone and no render can be
+     * in flight. render_off() clears the strip immediately after calling this,
+     * and a tick that outlived it would repaint one stale frame. The thread
+     * notices the flag within EFFECTS_TICK_MS, so 500 ms is generous. */
+    (void)k_thread_join(&effects_thread, K_MSEC(500));
 }
 
 static struct led_rgb hsv_to_rgb(uint16_t h, uint8_t s, uint8_t v) {
@@ -223,7 +276,12 @@ static void render_ripple(void) {
     led_pixel_update();
 }
 
-static void effects_tick(struct k_work *work) {
+/* One rendered frame.
+ *
+ * Called ONLY from effects_thread_fn(). The self-rescheduling that used to
+ * live here is now the thread's own k_sleep() loop, which is the whole point
+ * of the change: the wait is no longer a system-workqueue work item. */
+static void effects_render_frame(void) {
     tick_count++;
     switch (active) {
         case RGB_EFFECT_SOLID:       render_solid();      break;
@@ -233,9 +291,6 @@ static void effects_tick(struct k_work *work) {
         case RGB_EFFECT_TWINKLE:     render_twinkle();    break;
         case RGB_EFFECT_RIPPLE:      render_ripple();     break;
         default: break;
-    }
-    if (tick_running) {
-        k_work_schedule(&effects_work, K_MSEC(EFFECTS_TICK_MS));
     }
 }
 
@@ -347,7 +402,7 @@ void effects_set_active_key(int8_t key_index) {
  * still holds the mutex - to EVERY key press. That is a real price to pay in
  * the one revision whose entire purpose is input latency, and it buys a light
  * that nobody can perceive as late. So this handler only records what changed;
- * effects_tick() renders it within one 20 ms frame.
+ * effects_render_frame() renders it within one 20 ms frame.
  *
  * effects_on_key_down()/up() themselves KEEP their immediate render - the song
  * player (player.c) and the BLE note service (ble_service.c) both call them
@@ -355,7 +410,7 @@ void effects_set_active_key(int8_t key_index) {
  *
  * On concurrency: the two fields written here (rgb_control's last_key and
  * active_key) are plain, aligned int8_t stores, which the M4 cannot tear, and
- * effects_tick() re-reads them from scratch every frame rather than
+ * effects_render_frame() re-reads them from scratch every frame rather than
  * accumulating. A store landing mid-tick therefore costs at most one frame of
  * lag, never a corrupt value - so no lock is needed to protect them. Whether
  * this runs on the system workqueue (kscan's scan is a k_work_delayable in

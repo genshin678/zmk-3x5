@@ -11,7 +11,22 @@
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
-static uint8_t   brightness   = 128;
+/* Hard ceiling on the global brightness.
+ *
+ * 15 WS2812B draw up to 60 mA each at full white, i.e. ~900 mA for the strip
+ * alone; at the old default of 128/255 some effects still pulled ~450 mA. That
+ * is a lot to ask of a board whose LEDs were only just reworked onto their own
+ * 5 V feed, and it is a live suspect for any input misbehaviour that appears
+ * only while the strip is lit (a sagging rail browns out the MCU; the boot
+ * signature would replay).
+ *
+ * 96/255 (~38%) is still clearly visible for every effect and keeps the strip
+ * worst case near ~340 mA. The clamp lives in rgb_control_set_brightness() so
+ * EVERY path is bounded - the boot default, the Y+P brightness loop, and the
+ * BLE service - rather than relying on each caller to behave. */
+#define RGB_MAX_BRIGHTNESS 96
+
+static uint8_t   brightness   = RGB_MAX_BRIGHTNESS;
 static uint16_t  hue         = 200;
 static int8_t    last_key    = -1;
 
@@ -44,12 +59,16 @@ int rgb_control_init(void) {
 }
 
 void rgb_control_set_brightness(uint8_t v) {
+    /* Single clamp point for the whole module - see RGB_MAX_BRIGHTNESS. */
+    if (v > RGB_MAX_BRIGHTNESS) {
+        v = RGB_MAX_BRIGHTNESS;
+    }
     brightness = v;
 }
 void rgb_control_change_brightness(int delta) {
     int v = (int)brightness + delta;
-    if (v < 0)   v = 0;
-    if (v > 255) v = 255;
+    if (v < 0)                   v = 0;
+    if (v > RGB_MAX_BRIGHTNESS)  v = RGB_MAX_BRIGHTNESS;
     rgb_control_set_brightness((uint8_t)v);
 }
 uint8_t rgb_control_get_brightness(void) { return brightness; }

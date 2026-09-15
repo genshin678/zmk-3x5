@@ -67,13 +67,20 @@ LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 #define BU_FADE_STEP        16     /* 255/16 = 16 ticks = ~320 ms fade tail */
 #define BU_HOLD_TICKS       30     /* ~0.6 s at full brightness after press */
 
-#define BU_FILL_LEVEL       48
+#define BU_FILL_LEVEL       32
 #define BU_FILL_TICKS       75     /* ~1.5 s  */
 #define BU_WALK_LEVEL       200
 #define BU_WALK_STEP_TICKS  8      /* ~160 ms per pixel -> ~2.4 s for 15 */
-#define BU_ALLON_LEVEL      96
+#define BU_ALLON_LEVEL      64
 #define BU_ALLON_TICKS      40     /* ~0.8 s  */
 #define BU_DARK_TICKS       35     /* ~0.7 s  */
+
+/* First dark window is much longer than the repeat windows: the 15 WS2812B plus
+ * the TXS0102 sit on the SWITCHED 3.3V/VCC rail (nice!nano P0.13 gate), whose
+ * current budget is unknown. With the strip idle you can put a meter on that
+ * rail and read it without any LED load - that is the measurement that tells
+ * "rail alive?" apart from "rail collapses under LED current?". */
+#define BU_SETTLE_TICKS     250    /* ~5 s, first cycle only */
 
 /* Blue LED: 1 Hz, 5 ticks on = 100 ms, 45 ticks off = 900 ms. */
 #define BU_BLINK_PERIOD     50
@@ -91,6 +98,7 @@ static uint32_t ticks;
 static uint32_t anim_tick;
 static uint8_t  walk_pos;
 static bool     armed;
+static bool     first_dark;
 static enum bu_phase phase;
 static struct k_work_delayable bu_work;
 
@@ -194,7 +202,8 @@ void bringup_init(void) {
     }
 
     k_work_init_delayable(&bu_work, bu_tick);
-    phase      = BU_FILL;
+    phase      = BU_DARK;   /* first cycle: long idle window to meter the rail */
+    first_dark = true;
     anim_tick  = 0;
     ticks      = 0;
     walk_pos   = 0;

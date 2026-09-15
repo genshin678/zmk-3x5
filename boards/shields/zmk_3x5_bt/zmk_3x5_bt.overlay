@@ -64,6 +64,39 @@
 
 };
 
+/*
+ * EXTERNAL POWER (3.3V/VCC RAIL) POLARITY - DO NOT REMOVE
+ * -------------------------------------------------------
+ * The nice!nano header pin driven by P0.13 is the switched 3.3V/VCC output.
+ * ZMK's stock board file (zephyr/boards/.../nice_nano.dts) declares it as
+ *
+ *     EXT_POWER { compatible = "zmk,ext-power-generic";
+ *                 control-gpios = <&gpio0 13 GPIO_ACTIVE_LOW>; };
+ *
+ * which is correct for a GENUINE nice!nano (P0.13 pulled LOW = rail ON).
+ * ZMK's driver unconditionally ENABLES external power at boot
+ * (ext_power_generic_init() -> ext_power_enable() -> gpio_pin_set_dt(gpio, 1)),
+ * so on a genuine board the rail comes up LOW = ON.
+ *
+ * THIS PCB's module has the OPPOSITE polarity - the vendor documentation for
+ * this board states: "当 P0.13 设置为低时，将关闭 3.3V - VCC 引脚的电源"
+ * (P0.13 LOW switches the rail OFF). Measured on the real board:
+ *   - DFU/reset  (P0.13 floating, external pull-up): 3.3 V present  -> ON
+ *   - firmware running (P0.13 driven LOW by ZMK):   ~0 V            -> OFF
+ * i.e. the stock polarity turned the WS2812B/TXS0102 supply OFF the moment
+ * ZMK booted, which is exactly the "LEDs never light" failure.
+ *
+ * Overriding with GPIO_ACTIVE_HIGH makes ZMK's "enabled" state drive P0.13
+ * HIGH = rail ON on this hardware, and keeps the &ext_power behavior
+ * (EP_ON/EP_OFF/EP_TOG) working with correct semantics.
+ *
+ * NOTE: &{/EXT_POWER} (path reference) is used because the board file defines
+ * the node without a label - &EXT_POWER would not resolve.
+ */
+&{/EXT_POWER} {
+    control-gpios = <&gpio0 13 GPIO_ACTIVE_HIGH>;
+};
+
 &pinctrl {
     /* SPI3 = nRF52840 high-speed SPI (the only SPIM that can drive P1.x pins;
      * SPIM0/1/2 are P0-only). WS2812B data is on P1.04, so SPIM3 is mandatory.

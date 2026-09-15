@@ -16,4 +16,18 @@ config ZMK_RGB_PLAYER_LOG_LEVEL
       Log level for the zmk-rgb-player module. 0=off, 1=err, 2=wrn,
       3=inf, 4=dbg. Used by LOG_MODULE_DECLARE/REGISTER macros.
 
+config ZMK_RGB_PLAYER_BRINGUP
+    bool "Hardware bring-up self test (light the strip without any key press)"
+    default n
+    help
+      Diagnostic build for a freshly soldered board. At boot the strip runs a
+      chain self test (fill -> walking pixel -> all-on), then every key press
+      lights that key's own pixel, and the whole strip blinks once every 5 s as
+      a heartbeat. This makes the LEDs observable on a board whose matrix does
+      not work yet, which the normal firmware cannot do because it keeps the
+      active effect OFF and only a key press can light a pixel.
+
+      While enabled, effect switching is inert and the strip has exactly one
+      writer (src/bringup.c). Turn this off once the hardware is verified.
+
 endif # ZMK_RGBEFFECT

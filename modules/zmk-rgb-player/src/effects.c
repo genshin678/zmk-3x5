@@ -15,6 +15,7 @@
 #include <zmk_rgbeffect/led_pixel.h>
 #include <zmk_rgbeffect/rgb_control.h>
 #include <zmk_rgbeffect/effects.h>
+#include <zmk_rgbeffect/bringup.h>
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
@@ -214,6 +215,13 @@ void effects_tick_stop(void) {
 }
 
 void effects_set_active(rgb_effect_t e) {
+#if defined(CONFIG_ZMK_RGB_PLAYER_BRINGUP)
+    /* Bring-up build: src/bringup.c owns the strip so that every LED you
+     * observe has exactly one meaning. Effect switching is intentionally inert
+     * until CONFIG_ZMK_RGB_PLAYER_BRINGUP is turned back off. */
+    ARG_UNUSED(e);
+    return;
+#endif
     active = e;
     switch (e) {
         case RGB_EFFECT_OFF:
@@ -241,6 +249,10 @@ void effects_next(int direction) {
 }
 
 void effects_on_key_down(int8_t key_index) {
+#if defined(CONFIG_ZMK_RGB_PLAYER_BRINGUP)
+    bringup_key_event(key_index, true);
+    return;
+#endif
     rgb_control_set_last_key(key_index);
     if (active == RGB_EFFECT_SINGLE_KEY) {
         active_key = key_index;
@@ -251,6 +263,10 @@ void effects_on_key_down(int8_t key_index) {
 }
 
 void effects_on_key_up(int8_t key_index) {
+#if defined(CONFIG_ZMK_RGB_PLAYER_BRINGUP)
+    bringup_key_event(key_index, false);
+    return;
+#endif
     if (active == RGB_EFFECT_SINGLE_KEY && active_key == key_index) {
         active_key = -1;
         led_pixel_clear();

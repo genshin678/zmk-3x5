@@ -240,27 +240,30 @@ static void strip_thread(void *p1, void *p2, void *p3) {
      * so this is normally a no-op, but it removes any init-order doubt. */
     (void)led_pixel_init();
 
-    uint8_t  plan_idx = (uint8_t)(P_COUNT); /* force a phase change on entry */
+    /* plan[0] is P_DARK, so the very first thing the strip does is go black
+     * and stay black for 3.2 s - that is the window for metering the 3V3 rail
+     * with zero LED load. After the last phase the plan wraps back to index 1
+     * (P_RED), so the dark window happens once per power-up. */
+    uint8_t  plan_idx = 0;
     uint16_t tick     = 0;
 
     for (;;) {
-        if (plan_idx >= BU_PLAN_LEN || tick == 0) {
-            if (plan_idx >= BU_PLAN_LEN) {
-                plan_idx = 1;   /* skip the dark window after the first cycle */
-            } else {
-                plan_idx++;
-            }
-            tick = 0;
+        const struct bu_step *st = &bu_plan[plan_idx];
+
+        if (tick == 0) {
             LOG_INF("BRINGUP(PATTERN): phase %u (%u ticks)",
-                    bu_plan[plan_idx].phase, bu_plan[plan_idx].ticks);
+                    (unsigned int)st->phase, (unsigned int)st->ticks);
         }
 
-        bu_render(bu_plan[plan_idx].phase, tick);
+        bu_render(st->phase, tick);
         tick++;
 
-        if (tick >= bu_plan[plan_idx].ticks) {
-            plan_idx++;
+        if (tick >= st->ticks) {
             tick = 0;
+            plan_idx++;
+            if (plan_idx >= BU_PLAN_LEN) {
+                plan_idx = 1;   /* repeat from RED; the dark window is once */
+            }
         }
 
         k_sleep(K_MSEC(BU_TICK_MS));

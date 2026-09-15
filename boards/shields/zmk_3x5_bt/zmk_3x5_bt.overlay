@@ -142,7 +142,13 @@
 
         /* SPI
          *
-         * Zephyr's ws2812_spi driver serialises ONE WS2812 bit into ONE FULL
+         * reg is required by the worldsemi,ws2812-spi binding (the value is
+         * ignored - the driver shifts out over MOSI) but omitting it aborts
+         * the build with:
+         *   devicetree error: 'reg' is marked as required in 'properties:' */
+        reg = <0>;
+
+        /* Zephyr's ws2812_spi driver serialises ONE WS2812 bit into ONE FULL
          * SPI BYTE (ws2812_spi_ser(): buf[i] = bit ? one_frame : zero_frame,
          * 8 bytes per colour channel), so a pulse is 3 or 1 SPI bits wide:
          *

@@ -12,6 +12,8 @@
  */
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zmk/event_manager.h>
+#include <zmk/events/position_state_changed.h>
 #include <zmk_rgbeffect/led_pixel.h>
 #include <zmk_rgbeffect/rgb_control.h>
 #include <zmk_rgbeffect/effects.h>
@@ -312,6 +314,82 @@ void effects_on_key_up(int8_t key_index) {
 void effects_set_active_key(int8_t key_index) {
     effects_on_key_down(key_index);
 }
+
+/* ------------------------------------------------------------------ */
+/* per-key light feedback, driven straight off the kscan event         */
+/* ------------------------------------------------------------------ */
+/* The keymap used to route every key through the hand-rolled &kp_we, which
+ * happened to call effects_on_key_down() on its way past. KPTEST moved the
+ * typing path onto ZMK's stock &kp - right for typing, but it also removed
+ * those calls and so silently broke the two effects that need to know WHICH key
+ * was pressed:
+ *
+ *   RGB_EFFECT_SINGLE_KEY   lights the key you are holding
+ *   RGB_EFFECT_RIPPLE       radiates the wave from the last key pressed
+ *
+ * Rather than re-attach them through the keymap - where one bad binding can
+ * take typing down with it - subscribe to ZMK's own position event. It fires
+ * for every key, BEFORE the keymap is consulted, so per-key light feedback now
+ * survives even a broken keymap. That is the same reasoning that made the
+ * bring-up marker kscan-driven.
+ *
+ * ev->position is the KEYMAP position (0..14): the matrix transform has already
+ * been applied, which is exactly the LED index this strip uses (one pixel per
+ * key, wired in keymap order).
+ *
+ * WHY THIS RECORDS STATE BUT DELIBERATELY DOES NOT RENDER - unlike every other
+ * caller of effects_on_key_*():
+ *
+ * This callback runs INSIDE THE INPUT PATH, i.e. the very call chain the
+ * keystroke itself is travelling down, and led_pixel_update() is a SYNCHRONOUS
+ * SPI burst (~1.2 ms for one 360-byte frame) taken under led_mutex. Rendering
+ * from here would add that stall - plus however long an in-flight tick render
+ * still holds the mutex - to EVERY key press. That is a real price to pay in
+ * the one revision whose entire purpose is input latency, and it buys a light
+ * that nobody can perceive as late. So this handler only records what changed;
+ * effects_tick() renders it within one 20 ms frame.
+ *
+ * effects_on_key_down()/up() themselves KEEP their immediate render - the song
+ * player (player.c) and the BLE note service (ble_service.c) both call them
+ * and both want the pixel lit at the instant they say so.
+ *
+ * On concurrency: the two fields written here (rgb_control's last_key and
+ * active_key) are plain, aligned int8_t stores, which the M4 cannot tear, and
+ * effects_tick() re-reads them from scratch every frame rather than
+ * accumulating. A store landing mid-tick therefore costs at most one frame of
+ * lag, never a corrupt value - so no lock is needed to protect them. Whether
+ * this runs on the system workqueue (kscan's scan is a k_work_delayable in
+ * ZMK's gpio-matrix driver) or on a kscan thread, the argument is the same. */
+static int effects_position_cb(const zmk_event_t *eh) {
+    const struct zmk_position_state_changed *ev = as_zmk_position_state_changed(eh);
+
+    if (ev == NULL) {
+        return ZMK_EV_EVENT_BUBBLE;
+    }
+
+#if defined(CONFIG_ZMK_RGB_PLAYER_BRINGUP)
+    /* Bring-up build: src/bringup.c owns the strip and does its own counting,
+     * so hand the press straight over - same as effects_on_key_down() would. */
+    bringup_key_event((int8_t)ev->position, ev->state);
+#else
+    rgb_control_set_last_key((int8_t)ev->position);
+
+    /* Mirror effects_on_key_up()'s guard: only the key that is actually
+     * lighting the strip may clear it, so releasing an earlier key while a
+     * later one is held does not blank the held key's pixel. */
+    if (active == RGB_EFFECT_SINGLE_KEY) {
+        if (ev->state) {
+            active_key = (int8_t)ev->position;
+        } else if (active_key == (int8_t)ev->position) {
+            active_key = -1;
+        }
+    }
+#endif
+    return ZMK_EV_EVENT_BUBBLE;
+}
+
+ZMK_LISTENER(effects_position, effects_position_cb);
+ZMK_SUBSCRIPTION(effects_position, zmk_position_state_changed);
 
 void effects_player_enter(void) {
     player_takeover = true;

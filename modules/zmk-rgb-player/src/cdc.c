@@ -23,6 +23,18 @@
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
+/* The entire console implementation exists only when a `zmk,console` chosen
+ * node is declared - cdc_init() below already says so. Without an equivalent
+ * guard around the parser, console_cb() (and the buffers it is the sole reader
+ * of) are referenced by nothing, and -Wunused-function made every build print
+ *
+ *     zmk-rgb-player/src/cdc.c:32:13: warning: 'console_cb' defined but not used
+ *
+ * which is exactly the kind of noise that hides a real warning later. One guard
+ * around the whole block removes it without changing behaviour, since none of
+ * this code could run in that configuration anyway. */
+#if DT_HAS_CHOSEN(zmk_console)
+
 #define LINE_BUF_MAX  128
 static char line_buf[LINE_BUF_MAX];
 static size_t line_len;
@@ -68,6 +80,8 @@ static void process_line(const char *line) {
         LOG_WRN("unknown cdc cmd: %s", line);
     }
 }
+
+#endif /* DT_HAS_CHOSEN(zmk_console) */
 
 int cdc_init(void) {
 #if DT_HAS_CHOSEN(zmk_console)

@@ -1,5 +1,5 @@
 /*
- * bringup.c - LAYERS build: turn "no key output" into one of three hard facts.
+ * bringup.c - KPTEST build: turn "no key output" into one of two hard facts.
  *
  * WHY THIS BUILD EXISTS
  * --------------------
@@ -9,67 +9,75 @@
  * aliases 3V3 <-> VDD, so the 15 WS2812B get the gated 3.3 V rail - below the
  * 3.5 V spec floor - which is a hardware rework item, not a firmware bug.
  *
- * The previous build (BLEFIX) removed the transport variable with
- * CONFIG_ZMK_USB=n, so BLE is always the selected endpoint. That killed the
- * most likely cause, but it could not separate a SOFTWARE failure from a
- * PHYSICAL one, because the only key indicator we had hung off &kp_we itself:
+ * What the bench says so far, with the transport variable already removed
+ * (CONFIG_ZMK_USB=n since BLEFIX, so BLE is always the selected endpoint):
+ * a key press lights the blue LED TWICE on the LAYERS build. That proves kscan
+ * fired and the hand-rolled &kp_we ran - but it does NOT prove a keycode ever
+ * reached the host, and the two builds that could report on that were
+ * indistinguishable on the bench (both boot-blinked FIVE times).
  *
- *   switch --diode--> kscan --> transform --> keymap --> &kp_we --> HID
- *                                                             |
- *                                         effects_on_key_down() --> blue LED
+ * THIS BUILD CHANGES TWO THINGS AND NOTHING ELSE:
  *
- * If &kp_we never runs, that indicator stays dark - indistinguishable from a
- * dead matrix. THIS BUILD REMOVES THE BLIND SPOT by subscribing to ZMK's own
- * events, which fire BEFORE the keymap is consulted.
+ *  1. The typing path is now ZMK's STOCK &kp. &kp_we is out of the keymap.
+ *     Whatever the hand-rolled behaviour was or was not doing, it is no longer
+ *     in the circuit, and the bindings use keys.h macros, so the
+ *     boot-protocol-vs-usage-ID mistake cannot recur.
+ *  2. The HID report probe is now STICKY and POLLED rather than a single
+ *     sample taken 50 ms after the press. The old probe could only ever
+ *     produce a false "empty" (see LAYER 3 below).
  *
- * THREE LAYERS, ONE READ-OUT
- * -------------------------
+ * TWO LAYERS, ONE READ-OUT
+ * ------------------------
  *  L1  zmk_position_state_changed  <- raised by the kscan subsystem after the
  *      row/column scan produced a contact. This is THE PHYSICAL LAYER: it
  *      proves switch, diode, PCB trace, kscan pins, scan timing and the
  *      matrix transform all worked. It does NOT involve the keymap.
- *  L2  bringup_key_event()         <- called from &kp_we. THE KEYMAP /
- *      BEHAVIOUR LAYER: proof that the binding resolved and the behaviour
- *      actually executed.
- *  L3  bringup_l3_signal()          <- called by &kp_we right after it calls
- *      zmk_endpoints_send_report(). Samples the HID keyboard report 50 ms
- *      later and records whether a non-zero keycode is actually in it. This is
- *      the only probe that can separate:
- *        report non-empty -> the firmware built a real keycode and handed it to
- *                            zmk_hog_send_keyboard_report(). Fault is on the
- *                            host / BLE-link side, NOT in the keymap.
- *        report EMPTY     -> press and release fell inside one window and the
- *                            host received an all-zero report, so it shows
- *                            nothing. TIMING fault, not a mapping fault.
- *      It also logs the raw usage ID, which is how the keymap's
- *      boot-protocol-vs-usage-ID confusion was caught.
- *
- * Note deliberately NOT used as a layer: zmk_keycode_state_changed. ZMK's
- * stock &kp funnels through raise_zmk_keycode_state_changed_from_encoded(),
- * but &kp_we calls zmk_hid_keyboard_press() directly and therefore raises no
- * keycode event at all. Keying the read-out off that event would report a
- * false "no behaviour ran" on a perfectly healthy board.
+ *  L2  bringup_key_event()         <- still called by effects.c, but now
+ *      LOGGED ONLY and deliberately NOT counted in the read-out. On the HIDCHK
+ *      build it was the proof that the hand-rolled &kp_we ran; the keymap now
+ *      uses stock &kp, so there is nothing hand-rolled left to prove and
+ *      counting it would only add a second way to read the same press.
+ *  L3  l3_sample()                 <- the HID keyboard report itself, polled
+ *      from the LED thread every 20 ms. This is the fact that matters: it
+ *      separates "the firmware built a real keycode and handed it to the BLE
+ *      HOG" from "the report never filled at all".
+ *        report non-empty    -> firmware is complete end-to-end. A host that
+ *                               still shows nothing is a HOST / BLE-LINK
+ *                               fault, not a firmware fault.
+ *        report always empty -> the fault is at or below the HID report.
  *
  * ON-BOARD BLUE LED (P0.15) - its OWN thread, so a blocked SPI write can
  * neither starve it nor fake its timing. On each key press it blinks ONCE PER
  * LAYER THAT REPORTED:
  *
- *   boot              : FIVE quick blinks     <- this build's signature
+ *   boot              : SIX quick blinks      <- this build's signature.
+ *                                              LAYERS and HIDCHK both used
+ *                                              FIVE, which made them
+ *                                              indistinguishable on the bench
+ *                                              - that ambiguity is why the
+ *                                              "2 blinks" report could not be
+ *                                              attributed to a build.
  *   idle, connected   : clean 1 Hz heartbeat  <- BLE link is up
  *   idle, not paired  : double-blip every 2 s <- advertising; the host has not
  *                                                paired, so keystrokes have
  *                                                nowhere to go
- *   key press, 3 blinks : kscan AND &kp_we AND a non-zero HID report -> the
- *                         firmware path is complete and a real keycode was
- *                         handed to the Bluetooth HOG. If the host still shows
- *                         nothing, the fault is on the host / BLE side.
- *   key press, 2 blinks : kscan and &kp_we ran, but the HID report was already
- *                         EMPTY by +50 ms -> press/release merged. The host
- *                         receives an all-zero report. TIMING fault.
- *   key press, 1 blink  : kscan ran but &kp_we did NOT -> fault is in the
- *                         keymap / binding / behaviour layer
+ *   key press, 2 blinks : kscan AND a non-empty HID report -> the firmware is
+ *                         complete end-to-end and a real keycode was handed to
+ *                         the Bluetooth HOG. If the host still shows nothing,
+ *                         the fault is on the HOST / BLE side. Clear the bonds
+ *                         and re-pair before touching the firmware again.
+ *   key press, 1 blink  : kscan ran but the report NEVER filled. With stock
+ *                         &kp in the keymap, the keymap / binding / behaviour
+ *                         layers are out of frame, so this points at the HID
+ *                         report itself (report size / report type / the
+ *                         endpoint), not at a mapping mistake.
  *   key press, 0 blinks : kscan never fired -> PHYSICAL layer: switch, diode,
  *                         PCB trace, or a kscan pin
+ *
+ * HOLD THE KEY DOWN FOR A FULL TWO SECONDS when you count. The report is now
+ * polled across the whole window rather than sampled once, so a hold is not
+ * strictly required any more - but a deliberate 2 s hold removes any remaining
+ * doubt about press/release merging.
  *
  * WS2812 STRIP - own thread. Same self-describing static pattern as the
  * PATTERN build, PLUS a marker driven straight off the kscan event (so it
@@ -105,8 +113,8 @@ LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
 static volatile uint32_t n_l1;             /* L1 events seen            */
 static volatile uint32_t n_l2;             /* L2 callbacks seen         */
-static volatile uint32_t n_l3;             /* L3: HID report kept >0    */
-static volatile uint32_t n_l3_empty;       /* L3: press+release merged  */
+static volatile uint32_t n_l3;             /* L3: 0 -> non-empty hops   */
+static volatile uint32_t n_l3_empty;       /* L3: non-empty -> 0 hops   */
 static volatile uint32_t l3_last_usage;    /* last usage ID in report   */
 static volatile uint8_t  l3_last_count;    /* non-modifier keys in last */
 static volatile int32_t  l1_last_pos = -1; /* last kscan position       */
@@ -118,23 +126,20 @@ static volatile bool     l3_pending;
 /* ------------------------------------------------------------------ */
 /* LAYER 3 - the HID report itself (proves what is actually sent)      */
 /* ------------------------------------------------------------------ */
-/* Sampling the report 50 ms after the press separates the two things
- * that used to look identical from the outside:
- *   report non-empty -> a real keycode is sitting in the HID report and
- *                       zmk_hog_send_keyboard_report() was handed data. The
- *                       firmware did its job; the problem is on the host or
- *                       the BLE link, NOT in the keymap.
- *   report EMPTY     -> press and release landed inside the same sampling
- *                       window (default kscan debounce merges them), so the
- *                       host receives an all-zero report and shows nothing.
- *                       That is a TIMING fault, fixed by a longer press or by
- *                       a per-key hold behaviour.
- * It also records the raw usage ID, which catches the keymap's
- * boot-protocol-vs-usage-ID confusion directly. */
-#define BU_L3_DELAY_MS 50
-#define BU_L3_SAMPLE_MS 50
-
-static void l3_probe(struct k_work *work) {
+/* The single-shot "+50 ms sample" is GONE, and with it the only way this probe
+ * could lie. That design could only ever produce a FALSE "empty": if press and
+ * release both landed before the sample fired - a quick tap, or a kscan
+ * debounce that merged them - the report had already been cleared and the
+ * read-out blamed the wrong layer entirely.
+ *
+ * Instead the LED thread, which is already off the system workqueue and
+ * already ticks every 20 ms, POLLS the report across the whole collection
+ * window and latches a sticky "I saw a non-empty report" flag. Whichever 20 ms
+ * window the report happened to be non-empty in, it is caught. n_l3 counts
+ * empty -> non-empty TRANSITIONS so a two second hold does not inflate it.
+ * No work item and no timing assumption are left in the probe. */
+static void l3_sample(void) {
+    static bool prev_nonempty;
     struct zmk_hid_keyboard_report *rep = zmk_hid_get_keyboard_report();
     uint8_t count = 0;
     uint8_t last = 0;
@@ -147,25 +152,28 @@ static void l3_probe(struct k_work *work) {
         }
     }
 
-    if (count > 0) {
+    bool nonempty = (count > 0);
+
+    if (nonempty && !prev_nonempty) {
         n_l3++;
-        l3_pending = true;
+        LOG_INF("BRINGUP(KPTEST): HID report went NON-EMPTY - %u key(s), last usage 0x%02X",
+                (unsigned)count, (unsigned)last);
+    } else if (!nonempty && prev_nonempty) {
+        n_l3_empty++;
+    }
+
+    if (nonempty) {
+        l3_pending = true;              /* sticky for this press window */
         l3_last_usage = (uint32_t)last;
         l3_last_count = count;
-        LOG_INF("BRINGUP(LAYERS): L3 HID report HELD - %u key(s), last usage 0x%02X",
-                (unsigned)count, (unsigned)last);
-    } else {
-        n_l3_empty++;
-        LOG_WRN("BRINGUP(LAYERS): L3 HID report EMPTY at +%d ms - press/release "
-                "merged, host sees nothing", BU_L3_DELAY_MS);
     }
+
+    prev_nonempty = nonempty;
 }
 
-K_WORK_DELAYABLE_DEFINE(bu_l3_work, l3_probe);
-
-void bringup_l3_signal(void) {
-    (void)k_work_reschedule(&bu_l3_work, K_MSEC(BU_L3_DELAY_MS));
-}
+/* Kept so behaviour_kp_with_effect.c still links. The keymap no longer uses
+ * &kp_we, and the LED thread polls the report itself, so this is a no-op. */
+void bringup_l3_signal(void) {}
 
 /* Called from the kscan context: do no work here, only latch. The strip is
  * 400 ms behind and the blue LED consumes the latches on its own 20 ms tick. */
@@ -191,7 +199,9 @@ ZMK_SUBSCRIPTION(bu_l1_listener, zmk_position_state_changed);
 /* ================================================================== */
 
 #define BU_LED_TICK_MS        20
-#define BU_BOOT_BLINKS         5    /* five = this build                */
+#define BU_BOOT_BLINKS         6    /* SIX = KPTEST. LAYERS and HIDCHK both used
+                                     * FIVE, so a "2 blinks" report could not
+                                     * be attributed to a build. */
 #define BU_BOOT_TICKS         (BU_BOOT_BLINKS * 6 + 2)
 #define BU_HB_PERIOD_TICKS    50    /* 1 s                              */
 #define BU_HB_ON_TICKS         4    /* 80 ms                            */
@@ -200,8 +210,9 @@ ZMK_SUBSCRIPTION(bu_l1_listener, zmk_position_state_changed);
 
 #define BU_BLINK_ON_TICKS      3    /* 60 ms lit                        */
 #define BU_BLINK_GAP_TICKS     3    /* 60 ms dark between blinks        */
-#define BU_COLLECT_TICKS      10    /* 200 ms: lets kscan, &kp_we AND the
-                                     * L3 report probe (+50 ms) all land   */
+#define BU_COLLECT_TICKS      15    /* 300 ms: lets kscan land, and gives the
+                                     * 20 ms report poll every chance to catch a
+                                     * window in which the report was non-empty */
 #define BU_TAIL_TICKS         10    /* 200 ms before returning to idle  */
 
 enum bu_evt_phase {
@@ -234,16 +245,16 @@ static void led_tick(void) {
     case E_IDLE:
         if (l1_pending || l2_pending || l3_pending) {
             /* A press arrived. Give the later layers a moment to report too:
-             * kscan raises its event before the behaviour runs, and the L3
-             * report probe fires 50 ms after that. Latching immediately would
-             * always undercount. */
+             * kscan raises its event before the HID report is written, and the
+             * report is only sampled on the LED thread's own tick. Latching
+             * immediately would always undercount. */
             phase = E_COLLECT;
             phase_t = 0;
         } else {
             bool connected = zmk_ble_active_profile_is_connected();
             if (connected != ble_was_connected) {
                 ble_was_connected = connected;
-                LOG_INF("BRINGUP(LAYERS): bluetooth %s",
+                LOG_INF("BRINGUP(KPTEST): bluetooth %s",
                         connected ? "CONNECTED" : "not connected");
             }
 
@@ -262,14 +273,19 @@ static void led_tick(void) {
     case E_COLLECT:
         if (++phase_t >= BU_COLLECT_TICKS) {
             uint8_t l1 = l1_pending ? 1 : 0;
-            uint8_t l2 = l2_pending ? 1 : 0;
+            uint8_t l2 = l2_pending ? 1 : 0;   /* logged only, not counted */
             uint8_t l3 = l3_pending ? 1 : 0;
 
-            blinks_left = (uint8_t)(l1 + l2 + l3);
-            LOG_INF("BRINGUP(LAYERS): press -> L1(kscan)=%u L2(behaviour)=%u "
-                    "L3(HIDreport)=%u [totals L1=%u L2=%u L3held=%u L3empty=%u "
-                    "| last pos=%d idx=%d usage=0x%02X nkeys=%u]",
-                    (unsigned)l1, (unsigned)l2, (unsigned)l3,
+            /* KPTEST read-out: TWO layers only, so each count is unambiguous -
+             * there is no "which combination was that" left to argue about.
+             *   2 = kscan AND a non-empty HID report -> firmware complete
+             *   1 = kscan only -> the report never filled
+             *   0 = kscan never fired -> physical layer                      */
+            blinks_left = (uint8_t)(l1 + l3);
+            LOG_INF("BRINGUP(KPTEST): press -> L1(kscan)=%u L3(HIDreport)=%u "
+                    "(L2 logged only: %u) [totals L1=%u L2=%u L3trans=%u "
+                    "L3empty=%u | last pos=%d idx=%d usage=0x%02X nkeys=%u]",
+                    (unsigned)l1, (unsigned)l3, (unsigned)l2,
                     (unsigned)n_l1, (unsigned)n_l2, (unsigned)n_l3,
                     (unsigned)n_l3_empty,
                     (int)l1_last_pos, (int)l2_last_idx,
@@ -324,6 +340,8 @@ static void led_thread(void *p1, void *p2, void *p3) {
     ARG_UNUSED(p3);
 
     for (;;) {
+        l3_sample();     /* poll the live HID report every 20 ms - sticky, so
+                          * no press/release timing can hide a non-empty report */
         led_tick();
         k_sleep(K_MSEC(BU_LED_TICK_MS));
     }
@@ -423,7 +441,7 @@ static void strip_thread(void *p1, void *p2, void *p3) {
             seen = p;
             if (p >= 0 && p < LED_PIXEL_COUNT) {
                 pos_hold[p] = BU_POS_HOLD_TICKS;
-                LOG_INF("BRINGUP(LAYERS): strip marker -> pixel %d", (int)p);
+                LOG_INF("BRINGUP(KPTEST): strip marker -> pixel %d", (int)p);
             }
         }
 
@@ -467,8 +485,9 @@ void bringup_init(void) {
                     strip_thread, NULL, NULL, NULL, 7, 0, K_NO_WAIT);
     k_thread_name_set(&bu_strip_thread, "bu_strip");
 
-    LOG_INF("BRINGUP(LAYERS): blue LED blinks once per layer that reported - "
-            "2 = kscan+behaviour, 1 = kscan only, 0 = matrix dark");
+    LOG_INF("BRINGUP(KPTEST): blue LED read-out - 2 = kscan AND non-empty HID "
+            "report (firmware complete), 1 = kscan only (report never filled), "
+            "0 = matrix dark. Boot signature is SIX blinks.");
 }
 
 void bringup_key_event(int8_t key_index, bool pressed) {

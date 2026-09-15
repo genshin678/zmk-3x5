@@ -77,10 +77,32 @@
             /* NOTE: all 15 keys must type their letter. The corner/side keys are
              * ALSO combo triggers, but a ZMK combo already suppresses the member
              * keys while it is active, so they must NOT be bound to &none. */
+            /* KPTEST: the typing path moved off the hand-rolled &kp_we and onto
+             * ZMK's stock &kp, so the OFFICIAL pipeline runs verbatim:
+             *
+             *   &kp -> behavior_key_press -> raise_zmk_keycode_state_changed
+             *        -> hid_listener -> zmk_hid_keyboard_press()
+             *                        -> zmk_endpoints_send_report(HID_USAGE_KEY)
+             *
+             * Two reasons:
+             *  1. &kp_we called zmk_hid_keyboard_press() directly. If anything
+             *     in the hand-rolled path is wrong, the whole board looks dead.
+             *     With stock &kp that variable is removed.
+             *  2. The symbols below come from dt-bindings/zmk/keys.h, so they
+             *     are HID usage IDs by construction. A macro cannot be off by
+             *     the boot-protocol-vs-usage-ID difference that caused the
+             *     previous N->J / M->I bug - there is no number to get wrong.
+             *
+             * The ripple is no longer triggered here; the strip's per-key white
+             * marker is driven straight off the kscan event (L1), so per-key
+             * feedback survives independently of the keymap. Re-attach the
+             * ripple from a zmk_keycode_state_changed listener once typing is
+             * confirmed. */
+            /* pos: 0  1  2  3  4  5  6  7  8  9   10 11 12    13    14 */
             bindings = <
-                &kp_we 0x1C 0  &kp_we 0x18 1  &kp_we 0x10 2  &kp_we 0x14 3  &kp_we 0x15 4
-                &kp_we 0x0F 5  &kp_we 0x11 6  &kp_we 0x12 7  &kp_we 0x13 8  &kp_we 0x37 9
-                &kp_we 0x19 10 &kp_we 0x1A 11 &kp_we 0x3A 12 &kp_we 0x3B 13 &kp_we 0x3C 14
+                &kp Y  &kp U  &kp I  &kp O  &kp P
+                &kp H  &kp J  &kp K  &kp L  &kp SEMI
+                &kp N  &kp M  &kp COMMA  &kp DOT  &kp SLASH
             >;
         };
     };

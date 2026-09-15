@@ -1,55 +1,59 @@
 /*
- * bringup.c - key-independent hardware self test for the 3x5 keyboard.
+ * bringup.c - PROBE build: turn the on-board blue LED into the primary
+ * instrument, and make the WS2812 path unable to starve the input pipeline.
  *
- * WHY THIS EXISTS
- * ---------------
- * The normal firmware leaves the 15 WS2812B pixels DARK at boot: module_init()
- * never calls effects_set_active(), so the active effect stays RGB_EFFECT_OFF
- * and the only thing that can light a pixel is a key press (via &kp_we ->
- * effects_on_key_down()). On a freshly soldered board that is a dead end - the
- * single thing you need to observe is gated behind the single thing that is
- * most likely to be broken. A dark strip proves NOTHING.
+ * WHY THIS REVISION EXISTS
+ * ------------------------
+ * Board state after the ext-power fix: 3.3 V rail is ON, BLE works, but the
+ * strip is dark and NO key produces output. Everything the firmware *can*
+ * configure was verified against the CI artifact (devicetree + .config):
+ *   - EXT_POWER  control-gpios = <&gpio0 0xd 0x0>   (ACTIVE_HIGH = rail ON)
+ *   - kscan      rows = pro_micro D0/D1/D2, cols = D3/D4/D5/D6/D7
+ *                diode-direction = "row2col"
+ *   - led_strip  worldsemi,ws2812-spi on spi3, 15 px, 0x70/0x40 @ 4 MHz
+ *   - CONFIG_WS2812_STRIP_SPI=y, SPI_NRFX_SPIM=y, LED_STRIP=y
+ * so the remaining explanations are (a) a hardware/data-path problem on the
+ * strip, and/or (b) an input pipeline that never runs.
  *
- * WHAT IT DOES (only compiled with CONFIG_ZMK_RGB_PLAYER_BRINGUP=y)
- * ----------------------------------------------------------------
- * 0. ON-BOARD BLUE LED (nice!nano, P0.15) - the one indicator that does NOT
- *    depend on the WS2812 chain at all:
- *      steady 1 Hz blink (100 ms on, 900 ms off)
- *    If this blinks, THIS FIRMWARE IS RUNNING. If it is dark while the board
- *    is otherwise alive, the .uf2 did not take. This splits "firmware problem"
- *    from "LED chain problem" in one glance.
+ * THE ONE THING THAT COULD KILL *BOTH*
+ * ------------------------------------
+ * In the previous revision the WS2812 animation ran on the SYSTEM WORKQUEUE
+ * every 20 ms. ZMK drives the keyboard matrix scan from that same workqueue.
+ * If led_strip_update_rgb() -> spi_write() ever fails to complete, each call
+ * blocks until the driver's completion timeout and the workqueue becomes
+ * permanently oversubscribed: the matrix is never polled (=> no keys, at all),
+ * while BLE - which has its own threads - keeps advertising. Strip dark + dead
+ * keys + working Bluetooth is exactly that signature.
  *
- * 1. WS2812 loop, runs FOREVER so it cannot be missed - whatever moment you
- *    look at the strip, something is happening within a few seconds:
- *      fill  (all 15 dim,  ~1.5 s)
- *      walk  (one pixel sweeps 0 -> 14, ~160 ms each)
- *      allon (all 15 lit,  ~0.8 s)
- *      dark  (all off,     ~0.7 s)
- *    Reads: every pixel lights  -> chain + data line + level shifter OK.
- *           sweep stops at k-1    -> chain open at LED k (DIN/DOUT of k, or
- *                                    LED k mounted rotated 180 deg).
- *           nothing ever lights  -> problem is BEFORE LED 0 (P1.04 data,
- *                                    TXS0102 level shifter / OE, 5 V rail, SPI3).
- *           (earlier revisions ran this animation once at boot only - too easy
- *            to walk up to the board after it had already finished)
+ * So this build splits the two:
+ *   - WS2812 chase  -> its OWN thread (1 Hz-class, 400 ms/pixel). It can block
+ *                      as long as it likes without touching input.
+ *   - Blue LED      -> stays on the SYSTEM WORKQUEUE, deliberately, because it
+ *                      is now a health *probe* for that queue.
  *
- * 2. Key indicator, needs no host / no pairing / no text field:
- *      press a key -> that key's pixel goes FULL WHITE and fades over ~1 s,
- *      drawn on top of whatever the animation is doing.
- *    This exercises the whole input path (matrix -> diodes -> transform ->
- *    keymap -> behavior) and shows the result locally. Walk the keys and you
- *    can also confirm the layout order (Y U I O P / H J K L ; / N M , . /).
+ * BLUE LED (P0.15, independent of the WS2812 chain and of the level shifter)
+ * -------------------------------------------------------------------------
+ *   boot      : three quick blinks (this build's signature)
+ *   steady    : 1 Hz heartbeat, 100 ms on / 900 ms off
+ *   key event : SOLID ON for ~600 ms, overrides the heartbeat
  *
- * Notes
- * -----
- * - The renderer runs off a 20 ms k_work_delayable on the system workqueue.
- * - A key press only records state; the next tick (<= 20 ms) renders it, so no
- *   SPI traffic happens from the input thread and there is no tearing.
- * - While this build is active, effects_set_active() is inert and
- *   effects_on_key_down/up() are redirected here, so the strip has exactly one
- *   writer and every LED you observe has exactly one meaning.
- * - The blue LED is driven straight through the GPIO API (not the LED class)
- *   so no extra Kconfig is needed; gpio0 is already enabled by the matrix.
+ * READING IT
+ *   clean 1 Hz  + solid on key press -> workqueue fine AND the whole input
+ *                                       path (matrix -> diode -> transform ->
+ *                                       keymap -> &kp_we) works.
+ *   clean 1 Hz  + never solid        -> workqueue fine, but no key event ever
+ *                                       reaches the behavior: matrix/wiring.
+ *   ~1 blink every 10 s, or dark     -> the system workqueue is being starved
+ *                                       => the SPI/led_strip path is the bug.
+ *   totally dark, no 3-blink boot    -> this firmware is not running.
+ *
+ * WS2812 CHASE (own thread)
+ *   15 steps of a single bright pixel walking 0 -> 14 (400 ms each), then two
+ *   all-on pulses. Key presses stamp that key's pixel full white.
+ *   moving dot          -> SPI + P1.04 + TXS0102 + chain all work
+ *   all-on pulses visible-> every LED can light
+ *   nothing at all      -> failure is before LED 0: SPI3/MOSI, the level
+ *                          shifter, the 300R (R2), or the LED supply itself.
  */
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
@@ -63,134 +67,98 @@
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
-#define BU_TICK_MS          20
-#define BU_FADE_STEP        16     /* 255/16 = 16 ticks = ~320 ms fade tail */
-#define BU_HOLD_TICKS       30     /* ~0.6 s at full brightness after press */
+/* ---- blue LED: system workqueue, never touches SPI ---- */
+#define BU_LED_TICK_MS        20
+#define BU_BOOT_TICKS         60    /* 1.2 s: three 3-tick blinks */
+#define BU_BOOT_ON_TICKS       3
+#define BU_HB_PERIOD_TICKS    50    /* 1 s   */
+#define BU_HB_ON_TICKS         5    /* 100 ms */
+#define BU_KEY_FLASH_TICKS    30    /* 600 ms solid on a key event */
 
-#define BU_FILL_LEVEL       32
-#define BU_FILL_TICKS       75     /* ~1.5 s  */
-#define BU_WALK_LEVEL       200
-#define BU_WALK_STEP_TICKS  8      /* ~160 ms per pixel -> ~2.4 s for 15 */
-#define BU_ALLON_LEVEL      64
-#define BU_ALLON_TICKS      40     /* ~0.8 s  */
-#define BU_DARK_TICKS       35     /* ~0.7 s  */
-
-/* First dark window is much longer than the repeat windows: the 15 WS2812B plus
- * the TXS0102 sit on the SWITCHED 3.3V/VCC rail (nice!nano P0.13 gate), whose
- * current budget is unknown. With the strip idle you can put a meter on that
- * rail and read it without any LED load - that is the measurement that tells
- * "rail alive?" apart from "rail collapses under LED current?". */
-#define BU_SETTLE_TICKS     250    /* ~5 s, first cycle only */
-
-/* Blue LED: 1 Hz, 5 ticks on = 100 ms, 45 ticks off = 900 ms. */
-#define BU_BLINK_PERIOD     50
-#define BU_BLINK_ON_TICKS   5
+/* ---- WS2812 chase: dedicated thread ---- */
+#define BU_STRIP_START_MS   3000    /* dark window: meter the rail at 0 mA */
+#define BU_STRIP_STEP_MS     400
+#define BU_CHASE_LEVEL       255
+#define BU_BLINK_LEVEL        32
+#define BU_BLINK_STEPS         4    /* on/off/on/off after the chase */
 
 /* nice!nano on-board blue LED (P0.15). Independent of the WS2812 chain. */
 static const struct gpio_dt_spec blue_led = GPIO_DT_SPEC_GET(DT_NODELABEL(blue_led), gpios);
 static bool blue_ok;
 
-enum bu_phase { BU_FILL, BU_WALK, BU_ALLON, BU_DARK };
+static volatile uint8_t  key_hold[LED_PIXEL_COUNT];
+static volatile uint32_t key_events;
+static uint32_t led_ticks;
+static bool armed;
+static struct k_work_delayable led_work;
 
-static uint8_t  frame[LED_PIXEL_COUNT];    /* per-pixel grey level 0..255 */
-static uint8_t  key_hold[LED_PIXEL_COUNT]; /* ticks left at full brightness */
-static uint32_t ticks;
-static uint32_t anim_tick;
-static uint8_t  walk_pos;
-static bool     armed;
-static bool     first_dark;
-static enum bu_phase phase;
-static struct k_work_delayable bu_work;
+K_THREAD_STACK_DEFINE(bu_strip_stack, 1024);
+static struct k_thread bu_strip_thread;
 
-static void bu_fill(uint8_t v) {
-    for (uint8_t i = 0; i < LED_PIXEL_COUNT; i++) {
-        frame[i] = v;
-    }
-}
-
-static void bu_push(void) {
-    for (uint8_t i = 0; i < LED_PIXEL_COUNT; i++) {
-        led_pixel_set(i, frame[i], frame[i], frame[i]);
-    }
-    led_pixel_update();
-}
-
-/* Build the current frame from the animation phase, then stamp any key press
- * on top of it, then push. Called every tick. */
-static void bu_render(void) {
-    switch (phase) {
-    case BU_FILL:
-        bu_fill(BU_FILL_LEVEL);
-        break;
-    case BU_WALK:
-        bu_fill(0);
-        frame[walk_pos] = BU_WALK_LEVEL;
-        break;
-    case BU_ALLON:
-        bu_fill(BU_ALLON_LEVEL);
-        break;
-    default: /* BU_DARK */
-        bu_fill(0);
-        break;
-    }
-
-    for (uint8_t i = 0; i < LED_PIXEL_COUNT; i++) {
-        if (key_hold[i] > 0) {
-            frame[i] = 255;
-        }
-    }
-
-    bu_push();
-}
-
-static void bu_tick(struct k_work *work) {
+/* ------------------------------------------------------------------ */
+/* blue LED (system workqueue) - doubles as a workqueue health probe   */
+/* ------------------------------------------------------------------ */
+static void led_tick(struct k_work *work) {
     ARG_UNUSED(work);
-    ticks++;
+    led_ticks++;
 
-    if (blue_ok) {
-        gpio_pin_set_dt(&blue_led, ((ticks % BU_BLINK_PERIOD) < BU_BLINK_ON_TICKS) ? 1 : 0);
-    }
-
+    bool fresh = false;
     for (uint8_t i = 0; i < LED_PIXEL_COUNT; i++) {
         if (key_hold[i] > 0) {
             key_hold[i]--;
+            fresh = true;
         }
     }
 
-    /* Advance the animation. BU_DARK wraps back to BU_FILL, so the whole
-     * sequence repeats forever. */
-    switch (phase) {
-    case BU_FILL:
-        if (++anim_tick >= BU_FILL_TICKS) {
-            anim_tick = 0;
-            walk_pos = 0;
-            phase = BU_WALK;
-        }
-        break;
-    case BU_WALK:
-        if (++anim_tick >= BU_WALK_STEP_TICKS) {
-            anim_tick = 0;
-            if (++walk_pos >= LED_PIXEL_COUNT) {
-                phase = BU_ALLON;
+    bool on;
+    if (fresh) {
+        on = true;                                        /* key event wins   */
+    } else if (led_ticks < BU_BOOT_TICKS) {
+        on = ((led_ticks % 6) < BU_BOOT_ON_TICKS);        /* 3 quick blinks   */
+    } else {
+        on = ((led_ticks % BU_HB_PERIOD_TICKS) < BU_HB_ON_TICKS); /* 1 Hz     */
+    }
+
+    if (blue_ok) {
+        gpio_pin_set_dt(&blue_led, on ? 1 : 0);
+    }
+    k_work_schedule(&led_work, K_MSEC(BU_LED_TICK_MS));
+}
+
+/* ------------------------------------------------------------------ */
+/* WS2812 chase (own thread) - may block without hurting input         */
+/* ------------------------------------------------------------------ */
+static void strip_thread(void *p1, void *p2, void *p3) {
+    ARG_UNUSED(p1);
+    ARG_UNUSED(p2);
+    ARG_UNUSED(p3);
+
+    uint16_t phase = 0;
+    const uint16_t cycle = LED_PIXEL_COUNT + BU_BLINK_STEPS;
+
+    for (;;) {
+        bool blink = (phase >= LED_PIXEL_COUNT);
+        bool blink_on = blink && (((phase - LED_PIXEL_COUNT) % 2) == 0);
+
+        for (uint8_t i = 0; i < LED_PIXEL_COUNT; i++) {
+            uint8_t lvl;
+            if (key_hold[i] > 0) {
+                lvl = 255;                       /* key stamp, always visible */
+            } else if (blink) {
+                lvl = blink_on ? BU_BLINK_LEVEL : 0;
+            } else {
+                lvl = (i == phase) ? BU_CHASE_LEVEL : 0;
             }
+            led_pixel_set(i, lvl, lvl, lvl);
         }
-        break;
-    case BU_ALLON:
-        if (++anim_tick >= BU_ALLON_TICKS) {
-            anim_tick = 0;
-            phase = BU_DARK;
-        }
-        break;
-    default: /* BU_DARK */
-        if (++anim_tick >= BU_DARK_TICKS) {
-            anim_tick = 0;
-            phase = BU_FILL;
-        }
-        break;
-    }
+        led_pixel_update();
 
-    bu_render();
-    k_work_schedule(&bu_work, K_MSEC(BU_TICK_MS));
+        phase++;
+        if (phase >= cycle) {
+            phase = 0;
+        }
+        k_sleep(K_MSEC(BU_STRIP_STEP_MS));
+    }
 }
 
 void bringup_init(void) {
@@ -201,16 +169,19 @@ void bringup_init(void) {
         LOG_WRN("BRINGUP: on-board blue LED (P0.15) not ready - heartbeat disabled");
     }
 
-    k_work_init_delayable(&bu_work, bu_tick);
-    phase      = BU_DARK;   /* first cycle: long idle window to meter the rail */
-    first_dark = true;
-    anim_tick  = 0;
-    ticks      = 0;
-    walk_pos   = 0;
-    armed      = true;
-    /* Short delay so the led_strip driver (POST_KERNEL) and ZMK are fully up. */
-    k_work_schedule(&bu_work, K_MSEC(300));
-    LOG_INF("BRINGUP: self test armed (blue LED 1 Hz + WS2812 loop forever + key indicator)");
+    k_work_init_delayable(&led_work, led_tick);
+    armed = true;
+    k_work_schedule(&led_work, K_MSEC(200));
+
+    /* The strip gets its own thread so a blocking/failing spi_write() can
+     * NEVER starve the system workqueue that ZMK uses for the matrix scan. */
+    k_thread_create(&bu_strip_thread, bu_strip_stack,
+                    K_THREAD_STACK_SIZEOF(bu_strip_stack), strip_thread, NULL, NULL, NULL,
+                    7, 0, K_MSEC(BU_STRIP_START_MS));
+    k_thread_name_set(&bu_strip_thread, "bu_strip");
+
+    LOG_INF("BRINGUP(PROBE): blue LED 1Hz + 3-blink boot, solid on key; "
+            "WS2812 chase on its own thread");
 }
 
 void bringup_key_event(int8_t key_index, bool pressed) {
@@ -218,9 +189,9 @@ void bringup_key_event(int8_t key_index, bool pressed) {
         return;
     }
     if (pressed) {
-        /* Rendered by the next tick; the hold/fade tail makes a quick tap
-         * visible, which matters when you are tapping keys to test them. */
-        key_hold[key_index] = BU_HOLD_TICKS;
+        key_hold[key_index] = BU_KEY_FLASH_TICKS;
+        key_events++;
+        LOG_INF("BRINGUP: key down idx=%d (total %u)", key_index, key_events);
     }
 }
 

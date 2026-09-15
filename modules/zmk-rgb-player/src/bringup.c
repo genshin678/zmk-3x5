@@ -150,7 +150,6 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/bluetooth/bluetooth.h>   /* PAIRFIX: bt_addr_le_is_bonded, BT_ID_DEFAULT */
 #include <zmk/ble.h>
 #include <zmk/event_manager.h>
 #include <zmk/events/position_state_changed.h>
@@ -271,13 +270,6 @@ ZMK_SUBSCRIPTION(bu_l1_listener, zmk_position_state_changed);
                                      * 20 ms report poll every chance to catch a
                                      * window in which the report was non-empty */
 #define BU_TAIL_TICKS         10    /* 200 ms before returning to idle  */
-
-/* PAIRFIX: one-shot stale-profile self-repair, ~3 s after boot. By then
- * bt_enable() has completed and advertising is up, so the
- * zmk_ble_clear_all_bonds() -> update_advertising() pair can actually start an
- * advertising set instead of failing with -EAGAIN. */
-#define BU_REPAIR_DELAY_MS  3000
-#define BU_REPAIR_TICKS     (BU_REPAIR_DELAY_MS / BU_LED_TICK_MS)
 
 enum bu_evt_phase {
     E_IDLE = 0,
@@ -422,61 +414,33 @@ static void led_tick(void) {
     }
 }
 
-/* ================================================================== */
-/* PAIRFIX: stale-profile self-repair                                 */
-/* ================================================================== */
-/* The exact fingerprint of the bug that made this board unpairable:
+/* NOTE ON RECOVERY (PAIRFIX)
  *
- *   profiles[active].peer != BT_ADDR_LE_ANY   ZMK thinks the profile is taken,
- *                                            so zmk_ble_profile_is_open() is
- *                                            false and auth_pairing_accept()
- *                                            REJECTS every pairing request
- *   AND
- *   !bt_addr_le_is_bonded(BT_ID_DEFAULT, that peer)
- *                                            Zephyr's bond store has no key
- *                                            for it
+ * The fix for "the host cannot pair with this device" is the U+M+O+. combo,
+ * which now calls zmk_ble_clear_all_bonds() and therefore resets ZMK's profile
+ * table as well as Zephyr's bond store. Press it once after flashing; the blue
+ * LED confirms the result (3 blinks -> 2 blinks).
  *
- * A healthy board is only ever in one of two states: bonded on BOTH sides, or
- * cleared on BOTH sides. "Profile set, bond missing" is reachable ONLY by
- * calling bt_unpair() without set_profile_address() - which is exactly what the
- * old version of behavior_bt_clear_bonds.c did, and why the host kept
- * answering "cannot pair with this device".
+ * There is deliberately NO automatic boot-time repair here. The obvious
+ * implementation wants to detect the broken state with
  *
- * Runs once, ~3 s after boot, on the LED thread - never on the system
- * workqueue, which ZMK uses for the matrix scan. Self-limiting: on a healthy
- * board it does nothing at all. */
-static bool repair_stale_profile(void) {
-    const bt_addr_le_t *peer = zmk_ble_active_profile_addr();
-
-    if (bt_addr_le_cmp(peer, BT_ADDR_LE_ANY) == 0) {
-        return false;                                   /* open: already fine   */
-    }
-    if (bt_addr_le_is_bonded(BT_ID_DEFAULT, peer)) {
-        return false;                                   /* real bond: healthy   */
-    }
-
-    zmk_ble_clear_all_bonds();   /* bt_unpair + set_profile_address(ANY) + */
-                                 /* prof_select(0) + update_advertising()  */
-    return true;
-}
+ *     profiles[active].peer != BT_ADDR_LE_ANY  &&  !bt_addr_le_is_bonded(...)
+ *
+ * and bt_addr_le_is_bonded() is NOT declared by any header this file can reach
+ * - bluetooth/bluetooth.h, bluetooth/conn.h and bluetooth/addr.h were all
+ * checked against the exact Zephyr the build uses (zmkfirmware/zephyr
+ * v3.5.0+zmk-fixes). Without a declaration the compiler assumes it returns int
+ * when it really returns bool, which is undefined behaviour. That was caught as
+ * a -Wimplicit-function-declaration warning in CI; it is not worth shipping to
+ * save one key press.
+ */
 
 static void led_thread(void *p1, void *p2, void *p3) {
     ARG_UNUSED(p1);
     ARG_UNUSED(p2);
     ARG_UNUSED(p3);
 
-    uint32_t repair_at = BU_REPAIR_TICKS;
-
     for (;;) {
-        if (repair_at && --repair_at == 0) {
-            bool fixed = repair_stale_profile();
-            LOG_INF("BRINGUP(PAIRFIX): stale-profile repair %s",
-                    fixed ? "APPLIED - the profile held an address with no matching "
-                            "bond, which is what made ZMK reject pairing; the "
-                            "profile is now properly open"
-                          : "not needed");
-        }
-
         l3_sample();     /* poll the live HID report every 20 ms - sticky, so
                           * no press/release timing can hide a non-empty report */
         led_tick();

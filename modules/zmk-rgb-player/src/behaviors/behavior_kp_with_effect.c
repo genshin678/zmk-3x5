@@ -1,13 +1,22 @@
 /*
  * behavior_kp_with_effect.c - type the key AND trigger ripple effect
  *
+ * RETIRED FROM THE TYPING PATH (KPTEST round): no binding references this
+ * behaviour any more - the keymap uses ZMK's stock &kp. It is kept compiled so
+ * the ripple-capable variant stays available to re-attach later.
+ *
  * For each of the 15 physical keys, this behavior:
- *   1. Sends the corresponding HID scancode to the host
+ *   1. Sends the corresponding HID *usage ID* to the host.
+ *      NOT a "scancode" and NOT (usage - 4): zmk_hid_keyboard_press() takes the
+ *      raw usage ID from the Keyboard/Keypad page, e.g. I = 0x0C, N = 0x11,
+ *      M = 0x10. Feeding it (usage - 4) is the bug that once made N type J and
+ *      M type I. Prefer dt-bindings/zmk/keys.h symbols when this is put back
+ *      into service.
  *   2. Calls effects_on_key_down(idx) so the ripple starts from that key
  *
- * #binding-cells = <2>:  arg0 = HID scancode, arg1 = key index (0-14)
+ * #binding-cells = <2>:  arg0 = HID usage ID, arg1 = key index (0-14)
  *
- * Usage example for Y (pos 0, scancode 0x1C, keyIndex 0):
+ * Usage example for Y (pos 0, usage ID 0x1C, keyIndex 0):
  *   &kp_we 0x1C 0
  */
 #define DT_DRV_COMPAT zmk_behavior_kp_with_effect

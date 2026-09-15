@@ -13,7 +13,7 @@
  *   - compute current position_ms
  *   - fire every note whose startMs <= position_ms (advance head index)
  *   - on fire: light LED for keyIndex-1, and (mode B) call the &kp behavior
- *     for the corresponding scancode to emit a HID keypress.
+ *     for the corresponding HID *usage ID* to emit a HID keypress.
  */
 #include <zephyr/kernel.h>
 #include <zephyr/sys/atomic.h>
@@ -29,7 +29,11 @@
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
-/* Per-key scancode table. Indexed by keyIndex 0..14. */
+/* Per-key HID usage ID table (Keyboard/Keypad page 0x07), indexed by
+ * keyIndex 0..14. These are RAW usage IDs - exactly what
+ * zmk_hid_keyboard_press(zmk_key_t) expects. They are NOT boot-protocol
+ * "Byte 2" offsets and NOT (usage - 4). Values cross-checked against
+ * config/zmk_3x5_bt.keymap, whose table is the authoritative one. */
 static const uint8_t KEY_SCANCODE[15] = {
     0x1C, /* Y */
     0x18, /* U */
@@ -120,7 +124,7 @@ static void schedule_next_tick(void) {
     k_work_schedule(&play_work, K_MSEC(5));
 }
 
-/* Fire a note: trigger ripple effect at that key and (mode B) tap scancode. */
+/* Fire a note: trigger ripple effect at that key and (mode B) tap the usage ID. */
 static void fire_note(uint8_t idx, uint16_t duration_ms) {
     if (idx >= LED_PIXEL_COUNT) return;
 

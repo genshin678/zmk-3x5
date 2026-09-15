@@ -1,7 +1,11 @@
 description: >
   Type a key AND trigger the ripple effect.
-  param1: HID scancode (e.g. 0x1C for Y)
+  param1: HID *usage ID* from the Keyboard/Keypad page 0x07 - e.g. Y = 0x1C,
+          O = 0x12, I = 0x0C, N = 0x11, M = 0x10. This is NOT a "scancode" and
+          NOT (usage - 4); zmk_hid_keyboard_press() wants the raw usage ID.
+          Prefer dt-bindings/zmk/keys.h symbols when authoring a keymap.
   param2: key index 0-14 (for ripple origin), or -1 to skip effect
+  (The two binding-cell names below are historical; param1 is the usage ID.)
 compatible: zmk,behavior-kp-with-effect
 binding-cells:
   - scancode

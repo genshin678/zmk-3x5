@@ -1,8 +1,40 @@
 /*
- * bringup.c - KPTEST build: turn "no key output" into one of two hard facts.
+ * bringup.c - LATFIX build: the typing path works; now remove the latency.
  *
- * WHY THIS BUILD EXISTS
- * --------------------
+ * =========================== LATFIX (current) ============================
+ * STATUS: SOLVED. Bluetooth output works and every key is correct. The old
+ * "no key output" fault was a stale host-side bond - GATT connected, but the
+ * host was not subscribed to HID input reports, so
+ * zmk_hog_send_keyboard_report() silently went nowhere. Clearing the bonds and
+ * re-pairing fixed it. The keymap is ZMK's stock &kp using keys.h symbols.
+ *
+ * THE OPEN PROBLEM IS NOW INPUT LATENCY. This build attacks the firmware-side
+ * share of it, and nothing else:
+ *
+ *   1. BLE connection parameters are pinned in config/zmk_3x5_bt.conf. ZMK
+ *      sets none of them, so we silently inherited its battery-first defaults
+ *      from app/Kconfig: interval 7.5-15 ms and, critically,
+ *      BT_PERIPHERAL_PREF_LATENCY = 30 - permission for the peripheral to skip
+ *      up to 30 connection events, which at the 15 ms ceiling is a 465 ms
+ *      window of not listening. MAX_INT is now 6 (7.5 ms) and LATENCY is 0.
+ *   2. Logging is OFF (CONFIG_LOG=n). One ~250 character LOG_INF per keystroke
+ *      was draining to an unwired UART through a polled writer: ~22 ms of CPU
+ *      per key, spent on text nobody can read.
+ *   3. The WS2812 strip thread is OFF (BU_ENABLE_STRIP 0). The pixels cannot
+ *      light on this board anyway (rail is 3.3 V, the chip needs 3.5 V), yet
+ *      the thread pushed a 7.2 ms SPI burst every 400 ms from a priority that
+ *      outranked Zephyr's Bluetooth host RX thread. The blue-LED probe thread
+ *      also dropped from priority 6 to 10, below the whole BLE stack.
+ *
+ * BOOT SIGNATURE IS SEVEN BLINKS. The count is the only reliable way to tell
+ * which build is on the board: LATFIX 7, KPTEST 6, LAYERS / HIDCHK 5.
+ *
+ * Only the firmware half of the latency story is here. Connection parameters
+ * are a PREFERENCE and hosts frequently impose their own, so LATFIX-verify.md
+ * carries the equally important host-side checklist (adapter power saving,
+ * 2.4 GHz contention, stale driver) plus a self-test that needs no reflash.
+ *
+ * =================== HISTORICAL: the KPTEST rationale ====================
  * Board state: the gated 3.3V/VCC rail is ON (ext-power polarity fixed) and
  * Bluetooth is visible to the host, but NO key produces output. The strip
  * lights are a separate matter and are now understood: the schematic legend
@@ -50,13 +82,11 @@
  * neither starve it nor fake its timing. On each key press it blinks ONCE PER
  * LAYER THAT REPORTED:
  *
- *   boot              : SIX quick blinks      <- this build's signature.
- *                                              LAYERS and HIDCHK both used
- *                                              FIVE, which made them
- *                                              indistinguishable on the bench
- *                                              - that ambiguity is why the
- *                                              "2 blinks" report could not be
- *                                              attributed to a build.
+ *   boot              : SEVEN quick blinks    <- LATFIX signature. KPTEST used
+ *                                              SIX and LAYERS / HIDCHK used
+ *                                              FIVE, so the count is the only
+ *                                              reliable build fingerprint
+ *                                              available on the bench.
  *   idle, connected   : clean 1 Hz heartbeat  <- BLE link is up
  *   idle, not paired  : double-blip every 2 s <- advertising; the host has not
  *                                                paired, so keystrokes have
@@ -85,10 +115,19 @@
  *   dark 3.2 s -> red 6 s -> green 6 s -> blue 6 s -> checker 6 s -> loop
  *   any kscan position event -> that pixel goes WHITE for 1.2 s
  *
- * TEMPORARY diagnostic build. Before shipping: delete
- * CONFIG_ZMK_RGB_PLAYER_BRINGUP, restore CONFIG_ZMK_USB=y /
- * CONFIG_USB_DEVICE_STACK=y if USB is wanted, and restore
- * CONFIG_ZMK_IDLE_SLEEP_TIMEOUT=600000.
+ * ======================= BEFORE SHIPPING CHECKLIST =======================
+ *  [ ] Remove CONFIG_ZMK_RGB_PLAYER_BRINGUP (drops both diagnostic threads).
+ *  [ ] Set CONFIG_LOG=y only if UART logging is genuinely wanted.
+ *  [ ] Decide CONFIG_ZMK_USB. Leaving it n makes this a pure-Bluetooth board
+ *      and removes ZMK's endpoint-selection trap for good; setting it back to
+ *      y re-adds USB HID, but remember ZMK hands each report to exactly ONE
+ *      transport and the default preference when both are live is USB.
+ *  [ ] Restore CONFIG_ZMK_IDLE_SLEEP_TIMEOUT (ZMK's own default is 900000).
+ *  [ ] Reconsider CONFIG_BT_PERIPHERAL_PREF_LATENCY=0. It is the single
+ *      biggest battery cost in this build: at 0 the radio listens on every
+ *      connection event instead of napping. ZMK's default of 30 is fine for a
+ *      keyboard that mostly sits idle; 0 is for someone who cares about
+ *      response more than runtime.
  */
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
@@ -199,9 +238,10 @@ ZMK_SUBSCRIPTION(bu_l1_listener, zmk_position_state_changed);
 /* ================================================================== */
 
 #define BU_LED_TICK_MS        20
-#define BU_BOOT_BLINKS         6    /* SIX = KPTEST. LAYERS and HIDCHK both used
-                                     * FIVE, so a "2 blinks" report could not
-                                     * be attributed to a build. */
+#define BU_BOOT_BLINKS         7    /* SEVEN = LATFIX. KPTEST used SIX, LAYERS
+                                     * and HIDCHK used FIVE - the boot-blink
+                                     * count is the only reliable way to tell
+                                     * which build is actually on the board. */
 #define BU_BOOT_TICKS         (BU_BOOT_BLINKS * 6 + 2)
 #define BU_HB_PERIOD_TICKS    50    /* 1 s                              */
 #define BU_HB_ON_TICKS         4    /* 80 ms                            */
@@ -350,6 +390,27 @@ static void led_thread(void *p1, void *p2, void *p3) {
 /* ================================================================== */
 /* WS2812 strip - own thread, 400 ms tick                             */
 /* ================================================================== */
+/* LATFIX: SWITCHED OFF (BU_ENABLE_STRIP = 0). Two reasons:
+ *
+ *  1. The strip CANNOT light on this hardware. The schematic's net legend
+ *     aliases 3V3 <-> VDD, so all 15 WS2812B are fed from the gated 3.3 V rail
+ *     - below the chip's 3.5 V spec floor. That is a PCB rework item, not a
+ *     firmware one; no amount of code makes these pixels emit.
+ *  2. It is NOT free while dark. One frame is 15 pixels x 24 bits x 8 SPI
+ *     bytes = 2880 bytes, which at 3.2 MHz is a ~7.2 ms EasyDMA burst on
+ *     SPIM3 every 400 ms. EasyDMA holds the AHB bus and competes with the
+ *     radio's timeslots, and this thread (priority 7) sat ABOVE Zephyr's BT
+ *     host RX thread (CONFIG_BT_RX_PRIO 8). Spending bus time and thread
+ *     priority to push bits into pixels that cannot light is pure waste on a
+ *     build whose only remaining goal is input latency.
+ *
+ * Set BU_ENABLE_STRIP back to 1 to restore the full self-verifying pattern
+ * (dark -> red -> green -> blue -> checker, plus the kscan-driven white marker
+ * that proves the physical matrix). Worth doing once the rail is reworked to
+ * 5 V. */
+#define BU_ENABLE_STRIP     0
+
+#if BU_ENABLE_STRIP
 
 #define BU_TICK_MS          400
 #define BU_POS_HOLD_TICKS     3     /* 1.2 s marker                     */
@@ -460,6 +521,8 @@ static void strip_thread(void *p1, void *p2, void *p3) {
     }
 }
 
+#endif /* BU_ENABLE_STRIP */
+
 /* ================================================================== */
 /* entry points                                                       */
 /* ================================================================== */
@@ -476,18 +539,32 @@ void bringup_init(void) {
 
     /* Both threads are off the system workqueue: ZMK runs the matrix scan on
      * that workqueue, so anything we put there could starve it (and anything
-     * blocking there would make the read-out lie). */
+     * blocking there would make the read-out lie).
+     *
+     * PRIORITY 10, not 6 (LATFIX). The blue-LED probe is now deliberately the
+     * lowest-priority thing on the board that still runs, because the resource
+     * that must never be delayed is the Bluetooth link:
+     *   ZMK's BLE notify thread = 5    (CONFIG_ZMK_BLE_THREAD_PRIORITY)
+     *   Zephyr's BT host RX     = 8    (CONFIG_BT_RX_PRIO)
+     *   this probe thread       = 10   <- below both
+     *   Zephyr's idle thread    = 15
+     * At 6 the probe outranked the BT host RX thread and preempted it every
+     * 20 ms. A GPIO toggle plus a 6-byte report scan costs microseconds, so
+     * nothing is lost - and 10 is still far above idle, so the heartbeat and
+     * the blink timing stay accurate. */
     k_thread_create(&bu_led_thread, bu_led_stack, K_THREAD_STACK_SIZEOF(bu_led_stack),
-                    led_thread, NULL, NULL, NULL, 6, 0, K_NO_WAIT);
+                    led_thread, NULL, NULL, NULL, 10, 0, K_NO_WAIT);
     k_thread_name_set(&bu_led_thread, "bu_led");
 
+#if BU_ENABLE_STRIP
     k_thread_create(&bu_strip_thread, bu_strip_stack, K_THREAD_STACK_SIZEOF(bu_strip_stack),
                     strip_thread, NULL, NULL, NULL, 7, 0, K_NO_WAIT);
     k_thread_name_set(&bu_strip_thread, "bu_strip");
+#endif
 
-    LOG_INF("BRINGUP(KPTEST): blue LED read-out - 2 = kscan AND non-empty HID "
+    LOG_INF("BRINGUP(LATFIX): blue LED read-out - 2 = kscan AND non-empty HID "
             "report (firmware complete), 1 = kscan only (report never filled), "
-            "0 = matrix dark. Boot signature is SIX blinks.");
+            "0 = matrix dark. Boot signature is SEVEN blinks.");
 }
 
 void bringup_key_event(int8_t key_index, bool pressed) {

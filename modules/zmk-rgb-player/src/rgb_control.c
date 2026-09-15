@@ -39,10 +39,29 @@ static struct k_work_delayable bri_loop_work;
 static int8_t      hue_loop_dir = 0;   /* +1 or -1 */
 static struct k_work_delayable hue_loop_work;
 
+/* One step of the Y+P brightness loop.
+ *
+ * This WRAPS rather than parking at the ceiling: going past
+ * RGB_MAX_BRIGHTNESS lands on 0 and climbing resumes, and going below 0 lands
+ * back on the ceiling. That is the point - RGB_MAX_BRIGHTNESS is a power /
+ * current ceiling, not a place for the loop to stop. It also fixes the dead
+ * combo: the boot default used to sit AT that ceiling while the only direction
+ * was +1, so every step ran straight into the clamp and nothing ever changed.
+ *
+ * This is deliberately NOT rgb_control_change_brightness(): that one clamps,
+ * which is the right semantic for a plain "nudge the value" API. The wrap
+ * belongs to the *loop* alone, and BOTH loop entry points go through here so
+ * they cannot drift apart. */
+static void bri_step(int delta) {
+    int v = (int)brightness + delta;
+    if (v > RGB_MAX_BRIGHTNESS) v = 0;
+    if (v < 0)                  v = RGB_MAX_BRIGHTNESS;
+    brightness = (uint8_t)v;
+}
+
 static void bri_loop_tick(struct k_work *work) {
     if (bri_loop == BRI_IDLE) return;
-    int delta = (bri_loop == BRI_UP) ? +1 : -1;
-    rgb_control_change_brightness(delta);
+    bri_step((bri_loop == BRI_UP) ? +1 : -1);
     k_work_schedule(&bri_loop_work, K_MSEC(100));
 }
 
@@ -102,7 +121,7 @@ void rgb_control_bri_loop_start(bri_loop_t dir) {
     bri_loop = dir;
     bri_loop_dir = (dir == BRI_UP) ? +1 : -1;
     k_work_cancel_delayable(&bri_loop_work);
-    rgb_control_change_brightness(bri_loop_dir);
+    bri_step(bri_loop_dir);
     k_work_schedule(&bri_loop_work, K_MSEC(100));
 }
 void rgb_control_bri_loop_stop(void) {

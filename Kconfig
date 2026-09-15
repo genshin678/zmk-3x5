@@ -30,4 +30,42 @@ config ZMK_RGB_PLAYER_BRINGUP
       While enabled, effect switching is inert and the strip has exactly one
       writer (src/bringup.c). Turn this off once the hardware is verified.
 
+config ZMK_RGB_PLAYER_DEFAULT_EFFECT
+    int "RGB effect active at boot"
+    default 3
+    range 0 6
+    help
+      Which effect the strip shows after boot. 0=OFF, 1=solid single colour,
+      2=breathing, 3=rainbow, 4=single-key, 5=twinkle, 6=ripple.
+
+      The 4-corner combo (Y+N+P+/) cycles through all seven at runtime, so this
+      only decides what you see before you ever press that combo. It matters
+      because the firmware default is 0 (OFF) and effects_init() does not start
+      the render tick on its own - without this setting the strip stays dark at
+      boot and that looks exactly like "the LEDs are broken".
+
+      Cost note: 0 (OFF) and 1 (solid) are near-free; the animated effects
+      re-render the strip on a tick (see effects.c), which is the single
+      largest optional current draw in this firmware. Set 0 for the longest
+      battery life.
+
+config ZMK_RGB_PLAYER_BTDIAG
+    bool "BLE link-latency probe on the blue LED"
+    default n
+    help
+      TEMPORARY diagnostic. Measures the connection parameters the host
+      actually granted - interval AND slave latency - and blinks the on-board
+      blue LED 1..5 times per key press, where the count encodes the worst-case
+      wait for a keystroke in ms (1: <=10, 2: <=20, 3: <=50, 4: <=100,
+      5: >100). A separate nine-blink boot signature identifies the build.
+
+      It exists because ZMK only advertises a connection-parameter PREFERENCE
+      and never asks the host to honour it (app/src/ble.c has no
+      bt_conn_le_param_update call at all), so "is the link slow because the
+      host relaxed it while idle" cannot be answered from Kconfig. It has to be
+      measured.
+
+      Turn this off once the question is answered: it costs a thread, a
+      connection callback and a key-press subscription.
+
 endif # ZMK_RGBEFFECT

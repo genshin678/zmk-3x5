@@ -19,6 +19,34 @@
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
+/* Render tick period, in ms.
+ *
+ * This used to be 10 ms, which is more than the job needs. One frame is
+ * 15 pixels x 24 bits x 1 SPI byte = 360 bytes - Zephyr's ws2812_spi driver
+ * serialises ONE WS2812 bit into ONE full SPI byte (see the spi-one-frame /
+ * spi-zero-frame comment in the shield overlay) - which at 3.2 MHz takes
+ * ~900 us, plus the 300 us latch gap the newer WS2812B dies need, so ~1.2 ms
+ * per frame. And it is SYNCHRONOUS: led_pixel_update() ->
+ * led_strip_update_rgb() -> spi_write() does not return until the DMA has
+ * drained.
+ *
+ * At a 10 ms tick that is 12% of the SYSTEM WORKQUEUE pushing pixels - and the
+ * system workqueue is the same queue ZMK scans the key matrix on, so every
+ * render delays input handling slightly. At 20 ms it is 6%, and the strip
+ * still renders at 50 fps, which is smooth for all seven effects.
+ *
+ * CORRECTION, for the record: an earlier revision of bringup.c claimed one
+ * frame was 2880 bytes / 7.2 ms. That was wrong by a factor of 8 - it counted
+ * the 8 SPI bits inside a frame byte as though each were its own byte. The
+ * real figure is 360 bytes / ~1.2 ms, so the strip was never the load it was
+ * believed to be and disabling it saved far less than assumed. (It is
+ * re-enabled in this revision, the hardware now having a working 5 V feed.)
+ *
+ * The animation constants below - the breathing divider, the rainbow hue step
+ * and RIPPLE_SPEED - are scaled so that each effect keeps the wall-clock speed
+ * it had at 10 ms. */
+#define EFFECTS_TICK_MS 20
+
 static struct k_work_delayable effects_work;
 static rgb_effect_t active = RGB_EFFECT_OFF;
 static int8_t active_key = -1;         /* for SINGLE_KEY effect */
@@ -31,7 +59,7 @@ static void effects_tick(struct k_work *work);
 static void start_tick(void) {
     if (tick_running) return;
     k_work_init_delayable(&effects_work, effects_tick);
-    k_work_schedule(&effects_work, K_MSEC(10));
+    k_work_schedule(&effects_work, K_MSEC(EFFECTS_TICK_MS));
     tick_running = true;
 }
 
@@ -67,7 +95,10 @@ static void render_off(void) {
 }
 
 static uint8_t breathing_scale(void) {
-    uint32_t t = (tick_count / 16) % 100;
+    /* /8, not /16: EFFECTS_TICK_MS was doubled, so halving this divider keeps
+     * the breathing period at the same ~16 s wall-clock instead of stretching
+     * it to 32 s. */
+    uint32_t t = (tick_count / 8) % 100;
     uint32_t tri = (t < 50) ? (t * 2) : ((100 - t) * 2); /* 0..100 triangle */
     return (uint8_t)(20 + (tri * 80) / 100);             /* 20%..100% */
 }
@@ -93,7 +124,9 @@ static void render_breathing(void) {
 
 static void render_rainbow(void) {
     for (int i = 0; i < LED_PIXEL_COUNT; i++) {
-        uint16_t hue = (uint16_t)((tick_count * 3 + i * 24) % 360);
+        /* *6, not *3: the tick was doubled, so the hue step doubles too and a
+         * full 360-degree sweep still takes the same ~1.2 s. */
+        uint16_t hue = (uint16_t)((tick_count * 6 + i * 24) % 360);
         struct led_rgb c = hsv_to_rgb(hue, 255, rgb_control_get_brightness());
         led_pixel_set((uint8_t)i, c.r, c.g, c.b);
     }
@@ -142,7 +175,9 @@ static void render_twinkle(void) {
  *   width   = 5 keys (±2 around the head)
  *   max_dist = 14 (half the strip)
  */
-#define RIPPLE_SPEED   12
+/* 6, not 12: one key every 6 ticks instead of 12, so at a 20 ms tick the wave
+ * still advances one key per ~120 ms as it did at 10 ms. */
+#define RIPPLE_SPEED   6
 #define RIPPLE_WIDTH   5
 #define RIPPLE_MAX_D   14
 
@@ -198,7 +233,7 @@ static void effects_tick(struct k_work *work) {
         default: break;
     }
     if (tick_running) {
-        k_work_schedule(&effects_work, K_MSEC(10));
+        k_work_schedule(&effects_work, K_MSEC(EFFECTS_TICK_MS));
     }
 }
 

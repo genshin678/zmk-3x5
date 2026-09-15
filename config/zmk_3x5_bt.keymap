@@ -27,6 +27,9 @@
  *   hue_combo   (H+;)     → hue_dual   (suppresses both, no letter sent)
  *   eff_combo   (Y+N+P+/) → effect_cycle (suppresses all 4 corners)
  *   dfu_combo   (P+N)     → dfu_combo  (3s hold → DFU)
+ *   out_combo   (I+K)     → &out OUT_TOG (flip the output endpoint USB↔BLE;
+ *                            needed while plugged in for power, see the block
+ *                            comment where the combo is defined)
  *   bt_clr_combo (U+M+O+.) → bt_clear   (wipe every BLE bond, go pairable)
  *       PAIRFIX: the bound behavior used to call only bt_unpair(), which left
  *       ZMK's profiles[] still holding the old address, so ZMK refused every
@@ -87,6 +90,10 @@
 
 #include <behaviors.dtsi>
 #include <dt-bindings/zmk/keys.h>
+/* OUT_USB / OUT_BLE / OUT_TOG for the &out output-selection behavior. ZMK
+ * ships this behavior itself (app/dts/behaviors/outputs.dtsi, pulled in by
+ * behaviors.dtsi above) - there is no need to hand-roll endpoint switching. */
+#include <dt-bindings/zmk/outputs.h>
 
 / {
     keymap {
@@ -181,6 +188,36 @@
             timeout-ms = <200>;
             key-positions = <1 3 11 13>;
             bindings = <&bt_clear>;
+        };
+
+        /* I+K pressed together → toggle the OUTPUT ENDPOINT between USB and
+         * Bluetooth. Uses ZMK's own behavior (app/dts/behaviors/outputs.dtsi,
+         * included via behaviors.dtsi) - no custom code:
+         *   OUT_TOG -> zmk_endpoints_toggle_transport()
+         *   OUT_USB -> zmk_endpoints_select_transport(ZMK_TRANSPORT_USB)
+         *   OUT_BLE -> zmk_endpoints_select_transport(ZMK_TRANSPORT_BLE)
+         *
+         * WHY IT IS NEEDED NOW that CONFIG_ZMK_USB is restored:
+         * endpoints.c keeps ONE current_instance and get_selected_transport()
+         * returns preferred_transport whenever BOTH transports are ready - and
+         * preferred_transport defaults to USB. So a board that is plugged in
+         * for power while also bonded over Bluetooth sends every keystroke
+         * down USB and the Bluetooth host receives nothing. That is exactly
+         * how the original "Bluetooth is connected but no keys come out"
+         * symptom looked, and before this combo the only cure was to unplug.
+         * Now: press I+K once and the keystrokes go back on the air.
+         *
+         * The choice PERSISTS: zmk_endpoints_select_transport() finishes with
+         * settings_save_one("endpoints/preferred", ...), so it survives a
+         * reboot. Press it again to return to USB.
+         *
+         * I+K is positions 2 and 7 - vertically adjacent, so it can be
+         * squeezed with one hand - and it shares no key with any other combo
+         * in this block. */
+        out_combo {
+            timeout-ms = <200>;
+            key-positions = <2 7>;
+            bindings = <&out OUT_TOG>;
         };
     };
 

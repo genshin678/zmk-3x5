@@ -82,15 +82,31 @@
  * neither starve it nor fake its timing. On each key press it blinks ONCE PER
  * LAYER THAT REPORTED:
  *
- *   boot              : SEVEN quick blinks    <- LATFIX signature. KPTEST used
- *                                              SIX and LAYERS / HIDCHK used
- *                                              FIVE, so the count is the only
- *                                              reliable build fingerprint
+ *   boot              : EIGHT quick blinks    <- PAIRFIX signature. LATFIX used
+ *                                              SEVEN, KPTEST SIX and LAYERS /
+ *                                              HIDCHK FIVE, so the count is the
+ *                                              only reliable build fingerprint
  *                                              available on the bench.
  *   idle, connected   : clean 1 Hz heartbeat  <- BLE link is up
- *   idle, not paired  : double-blip every 2 s <- advertising; the host has not
- *                                                paired, so keystrokes have
- *                                                nowhere to go
+ *   idle, NO bond, not connected : double-blip every 2 s  <- the active profile
+ *                                              is OPEN, so ZMK is advertising
+ *                                              generically and WILL accept a
+ *                                              pairing request. This is the state
+ *                                              you want while pairing. (Before
+ *                                              PAIRFIX this indicator only ever
+ *                                              read is_connected(), so it also
+ *                                              showed a double-blip on a board
+ *                                              that would REFUSE pairing.)
+ *   idle, bond held, not connected : TRIPLE-blip every 2 s <- the profile still
+ *                                              holds an address, so
+ *                                              zmk_ble_profile_is_open() is false
+ *                                              and auth_pairing_accept() returns
+ *                                              BT_SECURITY_ERR_PAIR_NOT_ALLOWED.
+ *                                              The host reports "cannot pair with
+ *                                              this device", and NOTHING on the
+ *                                              host side can fix it: the refusal
+ *                                              is issued by the keyboard. Press
+ *                                              U+M+O+. to clear the bonds.
  *   key press, 2 blinks : kscan AND a non-empty HID report -> the firmware is
  *                         complete end-to-end and a real keycode was handed to
  *                         the Bluetooth HOG. If the host still shows nothing,
@@ -134,6 +150,7 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/bluetooth/bluetooth.h>   /* PAIRFIX: bt_addr_le_is_bonded, BT_ID_DEFAULT */
 #include <zmk/ble.h>
 #include <zmk/event_manager.h>
 #include <zmk/events/position_state_changed.h>
@@ -238,10 +255,10 @@ ZMK_SUBSCRIPTION(bu_l1_listener, zmk_position_state_changed);
 /* ================================================================== */
 
 #define BU_LED_TICK_MS        20
-#define BU_BOOT_BLINKS         7    /* SEVEN = LATFIX. KPTEST used SIX, LAYERS
-                                     * and HIDCHK used FIVE - the boot-blink
-                                     * count is the only reliable way to tell
-                                     * which build is actually on the board. */
+#define BU_BOOT_BLINKS         8    /* EIGHT = PAIRFIX. LATFIX used SEVEN,
+                                     * KPTEST SIX, LAYERS / HIDCHK FIVE - the
+                                     * boot-blink count is the only reliable way
+                                     * to tell which build is on the board. */
 #define BU_BOOT_TICKS         (BU_BOOT_BLINKS * 6 + 2)
 #define BU_HB_PERIOD_TICKS    50    /* 1 s                              */
 #define BU_HB_ON_TICKS         4    /* 80 ms                            */
@@ -254,6 +271,13 @@ ZMK_SUBSCRIPTION(bu_l1_listener, zmk_position_state_changed);
                                      * 20 ms report poll every chance to catch a
                                      * window in which the report was non-empty */
 #define BU_TAIL_TICKS         10    /* 200 ms before returning to idle  */
+
+/* PAIRFIX: one-shot stale-profile self-repair, ~3 s after boot. By then
+ * bt_enable() has completed and advertising is up, so the
+ * zmk_ble_clear_all_bonds() -> update_advertising() pair can actually start an
+ * advertising set instead of failing with -EAGAIN. */
+#define BU_REPAIR_DELAY_MS  3000
+#define BU_REPAIR_TICKS     (BU_REPAIR_DELAY_MS / BU_LED_TICK_MS)
 
 enum bu_evt_phase {
     E_IDLE = 0,
@@ -303,9 +327,33 @@ static void led_tick(void) {
             } else if (connected) {
                 on = ((ticks % BU_HB_PERIOD_TICKS) < BU_HB_ON_TICKS);
             } else {
+                /* Not connected - and there are TWO different reasons for that,
+                 * which used to be indistinguishable here because only
+                 * is_connected() was ever consulted:
+                 *
+                 *   profile OPEN  -> zmk_ble_profile_is_open() is true, so
+                 *                    auth_pairing_accept() returns
+                 *                    BT_SECURITY_ERR_SUCCESS. Pairing works.
+                 *   profile TAKEN -> auth_pairing_accept() returns
+                 *                    BT_SECURITY_ERR_PAIR_NOT_ALLOWED and the
+                 *                    host reports "cannot pair with device".
+                 *                    That refusal comes from the KEYBOARD, so
+                 *                    nothing done on the host side can fix it.
+                 *
+                 * The blip count now says which state the board is really in:
+                 *   2 blips = open,  pairable (what pairing needs)
+                 *   3 blips = taken, pairing REFUSED by ZMK                     */
+                bool prof_open = zmk_ble_active_profile_is_open();
+                uint8_t blips = prof_open ? 2 : 3;
                 uint32_t p = ticks % BU_WAIT_PERIOD_TICKS;
-                on = (p < BU_HB_ON_TICKS) ||
-                     (p >= BU_WAIT_GAP_TICKS && p < BU_WAIT_GAP_TICKS + BU_HB_ON_TICKS);
+
+                on = false;
+                for (uint8_t i = 0; i < blips; i++) {
+                    uint32_t start = i * BU_WAIT_GAP_TICKS;
+                    if (p >= start && p < start + BU_HB_ON_TICKS) {
+                        on = true;
+                    }
+                }
             }
         }
         break;
@@ -374,12 +422,61 @@ static void led_tick(void) {
     }
 }
 
+/* ================================================================== */
+/* PAIRFIX: stale-profile self-repair                                 */
+/* ================================================================== */
+/* The exact fingerprint of the bug that made this board unpairable:
+ *
+ *   profiles[active].peer != BT_ADDR_LE_ANY   ZMK thinks the profile is taken,
+ *                                            so zmk_ble_profile_is_open() is
+ *                                            false and auth_pairing_accept()
+ *                                            REJECTS every pairing request
+ *   AND
+ *   !bt_addr_le_is_bonded(BT_ID_DEFAULT, that peer)
+ *                                            Zephyr's bond store has no key
+ *                                            for it
+ *
+ * A healthy board is only ever in one of two states: bonded on BOTH sides, or
+ * cleared on BOTH sides. "Profile set, bond missing" is reachable ONLY by
+ * calling bt_unpair() without set_profile_address() - which is exactly what the
+ * old version of behavior_bt_clear_bonds.c did, and why the host kept
+ * answering "cannot pair with this device".
+ *
+ * Runs once, ~3 s after boot, on the LED thread - never on the system
+ * workqueue, which ZMK uses for the matrix scan. Self-limiting: on a healthy
+ * board it does nothing at all. */
+static bool repair_stale_profile(void) {
+    const bt_addr_le_t *peer = zmk_ble_active_profile_addr();
+
+    if (bt_addr_le_cmp(peer, BT_ADDR_LE_ANY) == 0) {
+        return false;                                   /* open: already fine   */
+    }
+    if (bt_addr_le_is_bonded(BT_ID_DEFAULT, peer)) {
+        return false;                                   /* real bond: healthy   */
+    }
+
+    zmk_ble_clear_all_bonds();   /* bt_unpair + set_profile_address(ANY) + */
+                                 /* prof_select(0) + update_advertising()  */
+    return true;
+}
+
 static void led_thread(void *p1, void *p2, void *p3) {
     ARG_UNUSED(p1);
     ARG_UNUSED(p2);
     ARG_UNUSED(p3);
 
+    uint32_t repair_at = BU_REPAIR_TICKS;
+
     for (;;) {
+        if (repair_at && --repair_at == 0) {
+            bool fixed = repair_stale_profile();
+            LOG_INF("BRINGUP(PAIRFIX): stale-profile repair %s",
+                    fixed ? "APPLIED - the profile held an address with no matching "
+                            "bond, which is what made ZMK reject pairing; the "
+                            "profile is now properly open"
+                          : "not needed");
+        }
+
         l3_sample();     /* poll the live HID report every 20 ms - sticky, so
                           * no press/release timing can hide a non-empty report */
         led_tick();
@@ -562,9 +659,12 @@ void bringup_init(void) {
     k_thread_name_set(&bu_strip_thread, "bu_strip");
 #endif
 
-    LOG_INF("BRINGUP(LATFIX): blue LED read-out - 2 = kscan AND non-empty HID "
-            "report (firmware complete), 1 = kscan only (report never filled), "
-            "0 = matrix dark. Boot signature is SEVEN blinks.");
+    LOG_INF("BRINGUP(PAIRFIX): blue LED read-out - on a key press: 2 = kscan AND "
+            "non-empty HID report (firmware complete), 1 = kscan only, 0 = matrix "
+            "dark. While idle: 1 Hz = connected, 2 blips every 2 s = active "
+            "profile OPEN (ZMK accepts pairing), 3 blips every 2 s = profile "
+            "TAKEN (ZMK REFUSES pairing with PAIR_NOT_ALLOWED). "
+            "Boot signature is EIGHT blinks.");
 }
 
 void bringup_key_event(int8_t key_index, bool pressed) {

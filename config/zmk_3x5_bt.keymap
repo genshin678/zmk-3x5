@@ -22,6 +22,12 @@
  *   hue_combo   (H+;)     → hue_dual   (suppresses both, no letter sent)
  *   eff_combo   (Y+N+P+/) → effect_cycle (suppresses all 4 corners)
  *   dfu_combo   (P+N)     → dfu_combo  (3s hold → DFU)
+ *   bt_clr_combo (U+M+O+.) → bt_clear   (wipe every BLE bond, go pairable)
+ *       PAIRFIX: the bound behavior used to call only bt_unpair(), which left
+ *       ZMK's profiles[] still holding the old address, so ZMK refused every
+ *       pairing request with BT_SECURITY_ERR_PAIR_NOT_ALLOWED. It now calls
+ *       zmk_ble_clear_all_bonds() - the same thing ZMK's stock &bt BT_CLR_ALL
+ *       does. See behavior_bt_clear_bonds.c and PAIRFIX-verify.md.
  *
  * === Effect list (cycle order) ===
  *   0 OFF / 1 静态单色 / 2 单色呼吸 / 3 彩虹循环 / 4 单点亮 / 5 星光闪烁 / 6 波纹
@@ -149,7 +155,10 @@
             bindings = <&dfu_combo>;
         };
 
-        /* U+M+O+. pressed together -> clear all BLE bonds (restore advertising) */
+        /* U+M+O+. pressed together -> clear EVERY BLE bond, then go back to
+         * general discoverable advertising (bound to zmk_ble_clear_all_bonds(),
+         * i.e. ZMK's stock &bt BT_CLR_ALL semantics). Required after changing
+         * hosts; also the fix for the "cannot pair" state PAIRFIX addressed. */
         bt_clr_combo {
             timeout-ms = <200>;
             key-positions = <1 3 11 13>;

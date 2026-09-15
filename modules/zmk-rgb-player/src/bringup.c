@@ -31,9 +31,18 @@
  *  L2  bringup_key_event()         <- called from &kp_we. THE KEYMAP /
  *      BEHAVIOUR LAYER: proof that the binding resolved and the behaviour
  *      actually executed.
- *  L3  (not instrumented)          <- zmk_hid_keyboard_press() +
- *      zmk_endpoints_send_report() inside &kp_we. The transport question is
- *      handled by the CONFIG_ZMK_USB=n change.
+ *  L3  bringup_l3_signal()          <- called by &kp_we right after it calls
+ *      zmk_endpoints_send_report(). Samples the HID keyboard report 50 ms
+ *      later and records whether a non-zero keycode is actually in it. This is
+ *      the only probe that can separate:
+ *        report non-empty -> the firmware built a real keycode and handed it to
+ *                            zmk_hog_send_keyboard_report(). Fault is on the
+ *                            host / BLE-link side, NOT in the keymap.
+ *        report EMPTY     -> press and release fell inside one window and the
+ *                            host received an all-zero report, so it shows
+ *                            nothing. TIMING fault, not a mapping fault.
+ *      It also logs the raw usage ID, which is how the keymap's
+ *      boot-protocol-vs-usage-ID confusion was caught.
  *
  * Note deliberately NOT used as a layer: zmk_keycode_state_changed. ZMK's
  * stock &kp funnels through raise_zmk_keycode_state_changed_from_encoded(),
@@ -50,8 +59,13 @@
  *   idle, not paired  : double-blip every 2 s <- advertising; the host has not
  *                                                paired, so keystrokes have
  *                                                nowhere to go
- *   key press, 2 blinks : kscan AND &kp_we both ran -> the firmware input path
- *                         is complete end-to-end; look at host / transport
+ *   key press, 3 blinks : kscan AND &kp_we AND a non-zero HID report -> the
+ *                         firmware path is complete and a real keycode was
+ *                         handed to the Bluetooth HOG. If the host still shows
+ *                         nothing, the fault is on the host / BLE side.
+ *   key press, 2 blinks : kscan and &kp_we ran, but the HID report was already
+ *                         EMPTY by +50 ms -> press/release merged. The host
+ *                         receives an all-zero report. TIMING fault.
  *   key press, 1 blink  : kscan ran but &kp_we did NOT -> fault is in the
  *                         keymap / binding / behaviour layer
  *   key press, 0 blinks : kscan never fired -> PHYSICAL layer: switch, diode,
@@ -76,6 +90,8 @@
 #include <zmk/ble.h>
 #include <zmk/event_manager.h>
 #include <zmk/events/position_state_changed.h>
+#include <zmk/endpoints.h>
+#include <zmk/hid.h>
 #include <zmk_rgbeffect/bringup.h>
 #include <zmk_rgbeffect/led_pixel.h>
 
@@ -89,10 +105,67 @@ LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
 static volatile uint32_t n_l1;             /* L1 events seen            */
 static volatile uint32_t n_l2;             /* L2 callbacks seen         */
+static volatile uint32_t n_l3;             /* L3: HID report kept >0    */
+static volatile uint32_t n_l3_empty;       /* L3: press+release merged  */
+static volatile uint32_t l3_last_usage;    /* last usage ID in report   */
+static volatile uint8_t  l3_last_count;    /* non-modifier keys in last */
 static volatile int32_t  l1_last_pos = -1; /* last kscan position       */
 static volatile int32_t  l2_last_idx = -1; /* last behaviour key index  */
 static volatile bool     l1_pending;       /* latched for the LED read-out */
 static volatile bool     l2_pending;
+static volatile bool     l3_pending;
+
+/* ------------------------------------------------------------------ */
+/* LAYER 3 - the HID report itself (proves what is actually sent)      */
+/* ------------------------------------------------------------------ */
+/* Sampling the report 50 ms after the press separates the two things
+ * that used to look identical from the outside:
+ *   report non-empty -> a real keycode is sitting in the HID report and
+ *                       zmk_hog_send_keyboard_report() was handed data. The
+ *                       firmware did its job; the problem is on the host or
+ *                       the BLE link, NOT in the keymap.
+ *   report EMPTY     -> press and release landed inside the same sampling
+ *                       window (default kscan debounce merges them), so the
+ *                       host receives an all-zero report and shows nothing.
+ *                       That is a TIMING fault, fixed by a longer press or by
+ *                       a per-key hold behaviour.
+ * It also records the raw usage ID, which catches the keymap's
+ * boot-protocol-vs-usage-ID confusion directly. */
+#define BU_L3_DELAY_MS 50
+#define BU_L3_SAMPLE_MS 50
+
+static void l3_probe(struct k_work *work) {
+    struct zmk_hid_keyboard_report *rep = zmk_hid_get_keyboard_report();
+    uint8_t count = 0;
+    uint8_t last = 0;
+
+    for (int i = 0; i < CONFIG_ZMK_HID_KEYBOARD_REPORT_SIZE; i++) {
+        uint8_t k = rep->body.keys[i];
+        if (k != 0) {
+            count++;
+            last = k;
+        }
+    }
+
+    if (count > 0) {
+        n_l3++;
+        l3_pending = true;
+        l3_last_usage = (uint32_t)last;
+        l3_last_count = count;
+        LOG_INF("BRINGUP(LAYERS): L3 HID report HELD - %u key(s), last usage 0x%02X",
+                (unsigned)count, (unsigned)last);
+    } else {
+        n_l3_empty++;
+        LOG_WRN("BRINGUP(LAYERS): L3 HID report EMPTY at +%d ms - press/release "
+                "merged, host sees nothing", BU_L3_DELAY_MS);
+    }
+}
+
+K_WORK_DELAYABLE_DEFINE(bu_l3_work, l3_probe);
+
+void bringup_l3_signal(void) {
+    (void)k_work_reschedule(&bu_l3_work, K_MSEC(BU_L3_DELAY_MS));
+}
 
 /* Called from the kscan context: do no work here, only latch. The strip is
  * 400 ms behind and the blue LED consumes the latches on its own 20 ms tick. */
@@ -127,7 +200,8 @@ ZMK_SUBSCRIPTION(bu_l1_listener, zmk_position_state_changed);
 
 #define BU_BLINK_ON_TICKS      3    /* 60 ms lit                        */
 #define BU_BLINK_GAP_TICKS     3    /* 60 ms dark between blinks        */
-#define BU_COLLECT_TICKS       3    /* 60 ms to let both layers report  */
+#define BU_COLLECT_TICKS      10    /* 200 ms: lets kscan, &kp_we AND the
+                                     * L3 report probe (+50 ms) all land   */
 #define BU_TAIL_TICKS         10    /* 200 ms before returning to idle  */
 
 enum bu_evt_phase {
@@ -158,10 +232,11 @@ static void led_tick(void) {
 
     switch (phase) {
     case E_IDLE:
-        if (l1_pending || l2_pending) {
-            /* A press arrived. Give the second layer a moment to report too:
-             * kscan raises its event before the behaviour runs, so latching
-             * immediately would always undercount by one. */
+        if (l1_pending || l2_pending || l3_pending) {
+            /* A press arrived. Give the later layers a moment to report too:
+             * kscan raises its event before the behaviour runs, and the L3
+             * report probe fires 50 ms after that. Latching immediately would
+             * always undercount. */
             phase = E_COLLECT;
             phase_t = 0;
         } else {
@@ -188,15 +263,21 @@ static void led_tick(void) {
         if (++phase_t >= BU_COLLECT_TICKS) {
             uint8_t l1 = l1_pending ? 1 : 0;
             uint8_t l2 = l2_pending ? 1 : 0;
+            uint8_t l3 = l3_pending ? 1 : 0;
 
-            blinks_left = (uint8_t)(l1 + l2);
+            blinks_left = (uint8_t)(l1 + l2 + l3);
             LOG_INF("BRINGUP(LAYERS): press -> L1(kscan)=%u L2(behaviour)=%u "
-                    "[totals L1=%u L2=%u, last pos=%d idx=%d]",
-                    (unsigned)l1, (unsigned)l2, (unsigned)n_l1, (unsigned)n_l2,
-                    (int)l1_last_pos, (int)l2_last_idx);
+                    "L3(HIDreport)=%u [totals L1=%u L2=%u L3held=%u L3empty=%u "
+                    "| last pos=%d idx=%d usage=0x%02X nkeys=%u]",
+                    (unsigned)l1, (unsigned)l2, (unsigned)l3,
+                    (unsigned)n_l1, (unsigned)n_l2, (unsigned)n_l3,
+                    (unsigned)n_l3_empty,
+                    (int)l1_last_pos, (int)l2_last_idx,
+                    (unsigned)l3_last_usage, (unsigned)l3_last_count);
 
             l1_pending = false;
             l2_pending = false;
+            l3_pending = false;
             phase_t = 0;
             phase = (blinks_left > 0) ? E_BLINK_ON : E_IDLE;
         }
@@ -408,5 +489,6 @@ void bringup_key_event(int8_t key_index, bool pressed) {
     ARG_UNUSED(key_index);
     ARG_UNUSED(pressed);
 }
+void bringup_l3_signal(void) {}
 
 #endif /* CONFIG_ZMK_RGB_PLAYER_BRINGUP */

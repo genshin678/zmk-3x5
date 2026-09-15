@@ -19,6 +19,7 @@
 #include <zmk/hid.h>
 #include <zmk/endpoints.h>
 #include <zmk_rgbeffect/effects.h>
+#include <zmk_rgbeffect/bringup.h>
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
@@ -28,6 +29,12 @@ static int on_pressed(struct zmk_behavior_binding *binding,
     int8_t  key_idx  = (int8_t)(int32_t)binding->param2;
     zmk_hid_keyboard_press(scancode);
     zmk_endpoints_send_report(0x07); /* HID keyboard usage page */
+    /* L3 diagnostic: sample the HID report 50 ms from now and report whether a
+     * non-zero keycode is actually sitting in it. This is the only probe that
+     * can tell "the firmware sent it" from "press+release merged into an empty
+     * report", which look identical from the host side. No-op unless the
+     * bring-up build is compiled in. */
+    bringup_l3_signal();
     if (key_idx >= 0) {
         effects_on_key_down(key_idx);
     }

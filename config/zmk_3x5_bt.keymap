@@ -36,9 +36,29 @@
  *   pos  0   1   2   3   4   5   6   7   8   9   10  11  12  13  14
  *   key  Y   U   I   O   P   H   J   K   L   ;   N   M   ,   .   /
  *   keyIndex (JSON, 1-based)  1..15  = pos + 1
- *   USB HID scancodes: Y=0x1C U=0x18 I=0x0C O=0x12 P=0x13
- *                      H=0x0B J=0x0D K=0x0E L=0x0F ;=0x33
- *                      N=0x11 M=0x10 ,=0x36 .=0x37 /=0x38
+ *
+ *   HID usage IDs (Keyboard/Keypad page 0x07). NOTE: these are the raw
+ *   *usage IDs*, NOT the USB HID boot-protocol "Byte 2" offsets - boot
+ *   protocol Byte2 = usage - 4, and feeding Byte2 to
+ *   zmk_hid_keyboard_press() sends the WRONG key. The table below was the
+ *   original mistake in this project:
+ *
+ *     key   boot Byte2   correct usage ID (what goes here)
+ *     Y        0x1C       0x1C   (coincidence: same value)
+ *     U        0x18       0x18   (coincidence)
+ *     I        0x0C       0x10
+ *     O        0x12       0x14
+ *     P        0x13       0x15
+ *     H        0x0B       0x0F
+ *     J        0x0D       0x11
+ *     K        0x0E       0x12
+ *     L        0x0F       0x13
+ *     ;        0x33       0x37
+ *     N        0x11       0x19
+ *     M        0x10       0x1A
+ *     ,        0x36       0x3A
+ *     .        0x37       0x3B
+ *     /        0x38       0x3C
  */
 
 #include <behaviors.dtsi>
@@ -58,9 +78,9 @@
              * ALSO combo triggers, but a ZMK combo already suppresses the member
              * keys while it is active, so they must NOT be bound to &none. */
             bindings = <
-                &kp_we 0x1C 0  &kp_we 0x18 1  &kp_we 0x0C 2  &kp_we 0x12 3  &kp_we 0x13 4
-                &kp_we 0x0B 5  &kp_we 0x0D 6  &kp_we 0x0E 7  &kp_we 0x0F 8  &kp_we 0x33 9
-                &kp_we 0x11 10 &kp_we 0x10 11 &kp_we 0x36 12 &kp_we 0x37 13 &kp_we 0x38 14
+                &kp_we 0x1C 0  &kp_we 0x18 1  &kp_we 0x10 2  &kp_we 0x14 3  &kp_we 0x15 4
+                &kp_we 0x0F 5  &kp_we 0x11 6  &kp_we 0x12 7  &kp_we 0x13 8  &kp_we 0x37 9
+                &kp_we 0x19 10 &kp_we 0x1A 11 &kp_we 0x3A 12 &kp_we 0x3B 13 &kp_we 0x3C 14
             >;
         };
     };

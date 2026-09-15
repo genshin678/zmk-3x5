@@ -1,96 +1,74 @@
 /*
- * bringup.c - PATTERN build: a static, self-describing test display.
+ * bringup.c - BLEFIX build: prove where the keystrokes are going.
  *
- * WHAT CHANGED AND WHY
+ * WHY THIS BUILD EXISTS
  * --------------------
- * PROBE build result: the strip is ALIVE (pixels light up, something moves)
- * but the image is wrong - LED 1 green, a few pixels moving, the rest stuck
- * on. That rules out "no data at all" and points at DATA INTEGRITY.
+ * Board state: the gated 3.3V/VCC rail is ON (ext-power polarity fixed), the
+ * WS2812B chain is alive but under-volted, Bluetooth is visible to the host -
+ * and NO key produces output.
  *
- * Everything the firmware can be blamed for was verified against the CI
- * artifact (devicetree + .config), and it is all correct:
- *   - EXT_POWER  control-gpios = <&gpio0 0xd 0x0>  (ACTIVE_HIGH = rail ON)
- *   - kscan      rows D0/D1/D2, cols D3/D4/D5/D6/D7, diode-direction row2col
- *   - led_strip  spi-one-frame 0x70, spi-zero-frame 0x40, chain-length 15,
- *                color-mapping = GREEN RED BLUE (0x2 0x1 0x3) for WS2812B
- *   - exactly ONE writer: ZMK's built-in underglow is disabled, the effects
- *     engine is fenced off while CONFIG_ZMK_RGB_PLAYER_BRINGUP is set
- *     (effects_set_active / effects_on_key_down return early), so the 10 ms
- *     effects tick never runs and can never interleave frames with this file.
+ * RE-VERIFIED against the CI artifact's final devicetree, not assumed:
+ *   pro_micro gpio-map (this really is a nice!nano connector):
+ *     D0=P0.08  D1=P0.06  D2=P0.17  D3=P0.20  D4=P0.22  D5=P0.24
+ *     D6=P1.00  D7=P0.11  D8=P1.04  D9=P1.06
+ *   => kscan rows D0/D1/D2 = {P0.08,P0.06,P0.17} and cols D3..D7 =
+ *      {P0.20,P0.22,P0.24,P1.00,P0.11} = EXACTLY the schematic's row/column
+ *      nets. The WS2812 data pin is D8/P1.04, i.e. NOT shared with any column.
+ *   => diode-direction "row2col" matches the schematic (cathode to the column
+ *      bus, anode to the row/switch side). Nothing is reversed.
+ *   => uart0 status="disabled", i2c0 status="disabled" - they cannot steal
+ *      P0.08/P0.06/P0.17/P0.20 even though their pinctrl states name those pins.
+ *   => EXT_POWER control-gpios = <&gpio0 0xd 0x0> (ACTIVE_HIGH = rail ON).
+ *   => led_strip: ws2812-spi on spi3, chain-length 15, color-mapping G,R,B,
+ *      0x70/0x40; exactly ONE writer (ZMK RGB_UNDERGLOW is absent from .config).
+ *   => &kp_we is registered identically to ZMK's stock &kp (BEHAVIOR_DT_INST_
+ *      DEFINE with the same trailing level/prio/api arguments) and its two
+ *      callbacks call the SAME pair of functions the stock behaviour ends up
+ *      calling: zmk_hid_keyboard_press() (which wants the RAW usage id, and
+ *      gets it) followed by zmk_endpoints_send_report(HID_USAGE_KEY).
  *
- * THE TIMING MATH (the reason this build also slows the SPI clock down)
- * -------------------------------------------------------------------
- * Zephyr's ws2812_spi driver (v3.5.0) serializes ONE WS2812 bit into ONE
- * FULL SPI BYTE:
+ * So the firmware's input path is provably complete, and the remaining
+ * candidate is WHERE the report is delivered. ZMK's endpoints layer keeps a
+ * single current_instance and send_keyboard_report() uses it - it does not
+ * mirror to both transports. preferred_transport DEFAULTS TO USB, so a board
+ * that is on USB power and also bonded over BLE sends every key over USB and
+ * the BLE host sees nothing. This build removes that variable: CONFIG_ZMK_USB=n
+ * makes is_usb_ready() a constant false, so BLE is always the selected
+ * transport. Everything else (kscan, keymap, &kp_we, the strip) is untouched.
  *
- *     ws2812_spi_ser(): buf[i] = color & BIT(7-i) ? one_frame : zero_frame;
- *                       px_buf += 8;   // 8 SPI bytes per colour channel
+ * BLUE LED (P0.15) - the read-out, on the SYSTEM workqueue, independent of the
+ * WS2812 chain and of the TXS0102:
+ *   boot            : FOUR quick blinks        <- this build's signature
+ *   not connected   : double-blip every 2 s    <- BLE is advertising; the host
+ *                                                has NOT paired/connected yet,
+ *                                                so keystrokes have nowhere to
+ *                                                go (the most common cause)
+ *   connected       : clean 1 Hz heartbeat     <- BLE link is up
+ *   any key press   : SOLID 600 ms             <- matrix -> diode -> transform
+ *                                                -> keymap -> &kp_we ALL work;
+ *                                                if the host still shows no
+ *                                                characters, the fault is
+ *                                                downstream of the firmware
+ *   dark / random   : the system workqueue is being starved (should not happen
+ *                     here - the strip runs on its own thread)
  *
- * so with spi-one-frame = 0x70 (0111_0000) and spi-zero-frame = 0x40
- * (0100_0000) the pulse widths are 3 and 1 SPI bit:
+ * WS2812 STRIP - unchanged static, self-describing display, refreshed every
+ * 400 ms on its OWN thread, so any wrong pixel is a DECODE error, not a
+ * refresh artefact:
+ *   dark 3.2 s -> red 8 s -> green 8 s -> blue 8 s -> white(40%) 8 s ->
+ *   checker (even red / odd green) 8 s -> single red dot walking 0..14 -> loop
  *
- *   SPI clock | T1H (3 bits)      | T0H (1 bit)       | WS bit period (8 bits)
- *   4.0 MHz   | 0.75 us  (ok)     | 0.25 us (MIN edge)| 2.0 us
- *   3.2 MHz   | 0.94 us  (ok)     | 0.31 us  (ok)     | 2.5 us
- *   WS2812B   | 0.65 - 0.95 us    | 0.25 - 0.55 us    | >= 0.65 us
- *
- * The data does not go straight from the nRF to the LED: it passes through
- * U1 (TXS0102), a bidirectional translator built for I2C/open-drain that
- * pulls its high level up through a ~10k internal resistor and relies on a
- * one-shot edge accelerator. A 10k pull-up on ~25 pF of line + LED input
- * capacitance spends roughly 100-150 ns just crossing the LED's input
- * threshold (0.7 x VDD). At 4 MHz that eats most of the margin of a "1" bit
- * (0.75 us -> effectively ~0.60-0.65 us, i.e. below the 0.65 us minimum),
- * so a "1" can be decoded as a "0" - which is exactly the kind of corruption
- * that produces wrong colours on some pixels and correct ones on others.
- * At 3.2 MHz the same "1" is still ~0.80 us wide at the LED pin: centre of
- * spec. That is the whole point of this build - it is the cheapest possible
- * test of "is the signal marginal?" (no soldering required).
- *
- * Note: T1H and T0H move in the same direction, so there is no clock that
- * fixes both perfectly. 3.2 MHz is the best compromise: T0H well clear of
- * its minimum and T1H still inside its window.
- *
- * THE DISPLAY (static content, refreshed every 400 ms - nothing churns)
- * --------------------------------------------------------------------
- *   phase        duration   what you should see
- *   dark          3.2 s     all 15 dark          <- meter the 3V3 rail here
- *   red           8.0 s     all 15 RED
- *   green         8.0 s     all 15 GREEN
- *   blue          8.0 s     all 15 BLUE
- *   white         8.0 s     all 15 WHITE (dim, ~40 %, to stay inside the
- *                           current budget of the switched 3V3 rail)
- *   checker       8.0 s     even pixels RED, odd pixels GREEN (index test)
- *   walk         18.0 s     one RED dot walks index 0 -> 14, 1.2 s each,
- *                           everything else dark (chain-topology test)
- *   then it repeats from "red".
- *
- * READING IT
- *   all 15 correct in every phase -> the chain, the GRB order and the rail
- *     are all fine with a slow clock; the old failure was an edge-rate /
- *     timing margin problem. Keep 3.2 MHz (or bypass U1 - see below).
- *   LED 1 green while the rest are red -> the first LED decoded its 3 bytes
- *     one byte early/late: pure signal-integrity at the FIRST pixel, i.e.
- *     U1 / R2 / the 3V3 rail - not the firmware.
- *   LEDs 1..n correct, the rest dark or junk -> the chain or the supply
- *     fails at LED n. With 3V3 (below the WS2812B 3.5 V minimum) this is the
- *     expected signature of a supply droop: move the strip's VDD to VBUS/5 V.
- *   walk dot lands on the wrong pixel or two pixels light together -> the
- *     frame is still misaligned; report the exact offset.
- *   everything dark in every phase -> the data line never reaches LED 1.
- *
- * BLUE LED (P0.15, on the SYSTEM workqueue, independent of the strip)
- *   boot      : three quick blinks (this build's signature)
- *   steady    : 1 Hz heartbeat  (the workqueue health probe)
- *   key event : SOLID ON ~600 ms + that key's own pixel goes WHITE
- *   => "1 Hz + solid on every press" proves matrix -> diode -> transform ->
- *      keymap -> &kp_we is intact and the problem is host-side transport.
+ * TEMPORARY diagnostic build. Before shipping: delete
+ * CONFIG_ZMK_RGB_PLAYER_BRINGUP, restore CONFIG_ZMK_USB=y /
+ * CONFIG_USB_DEVICE_STACK=y if USB is wanted, and restore
+ * CONFIG_ZMK_IDLE_SLEEP_TIMEOUT=600000.
  */
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/logging/log.h>
+#include <zmk/ble.h>
 #include <zmk_rgbeffect/bringup.h>
 #include <zmk_rgbeffect/led_pixel.h>
 
@@ -100,11 +78,15 @@ LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
 /* ---- blue LED: system workqueue, never touches SPI ---- */
 #define BU_LED_TICK_MS        20
-#define BU_BOOT_TICKS         60    /* 1.2 s: three 3-tick blinks */
-#define BU_BOOT_ON_TICKS       3
+#define BU_BOOT_ON_TICKS       3    /* 3 ticks on / 3 off = one blink */
+#define BU_BOOT_BLINKS         4    /* FOUR blinks identify this build */
+#define BU_BOOT_TICKS         (BU_BOOT_BLINKS * 6 + 2)
 #define BU_HB_PERIOD_TICKS    50    /* 1 s   */
 #define BU_HB_ON_TICKS         5    /* 100 ms */
 #define BU_KEY_FLASH_TICKS    30    /* 600 ms solid on a key event */
+/* not-connected ("advertising") pattern: two short blips every 2 s */
+#define BU_WAIT_PERIOD_TICKS 100
+#define BU_WAIT_GAP_TICKS     12
 
 /* ---- static pattern: dedicated thread ---- */
 #define BU_TICK_MS           400
@@ -146,6 +128,7 @@ static volatile uint8_t  key_hold[LED_PIXEL_COUNT];
 static volatile uint32_t key_events;
 static uint32_t led_ticks;
 static bool armed;
+static bool ble_was_connected;
 static struct k_work_delayable led_work;
 
 K_THREAD_STACK_DEFINE(bu_strip_stack, 1024);
@@ -166,13 +149,24 @@ static void led_tick(struct k_work *work) {
         }
     }
 
+    bool connected = zmk_ble_active_profile_is_connected();
+    if (connected != ble_was_connected) {
+        ble_was_connected = connected;
+        LOG_INF("BRINGUP(BLEFIX): bluetooth %s", connected ? "CONNECTED" : "not connected");
+    }
+
     bool on;
     if (fresh) {
-        on = true;                                        /* key event wins   */
+        on = true;                                          /* key event wins */
     } else if (led_ticks < BU_BOOT_TICKS) {
-        on = ((led_ticks % 6) < BU_BOOT_ON_TICKS);        /* 3 quick blinks   */
+        on = ((led_ticks % 6) < BU_BOOT_ON_TICKS);          /* 4 quick blinks */
+    } else if (connected) {
+        on = ((led_ticks % BU_HB_PERIOD_TICKS) < BU_HB_ON_TICKS);   /* 1 Hz   */
     } else {
-        on = ((led_ticks % BU_HB_PERIOD_TICKS) < BU_HB_ON_TICKS); /* 1 Hz     */
+        /* advertising, host has not paired: double-blip every 2 s */
+        uint32_t p = led_ticks % BU_WAIT_PERIOD_TICKS;
+        on = (p < BU_HB_ON_TICKS) ||
+             (p >= BU_WAIT_GAP_TICKS && p < BU_WAIT_GAP_TICKS + BU_HB_ON_TICKS);
     }
 
     if (blue_ok) {
@@ -251,7 +245,7 @@ static void strip_thread(void *p1, void *p2, void *p3) {
         const struct bu_step *st = &bu_plan[plan_idx];
 
         if (tick == 0) {
-            LOG_INF("BRINGUP(PATTERN): phase %u (%u ticks)",
+            LOG_INF("BRINGUP(BLEFIX): phase %u (%u ticks)",
                     (unsigned int)st->phase, (unsigned int)st->ticks);
         }
 
@@ -289,8 +283,9 @@ void bringup_init(void) {
                     7, 0, K_NO_WAIT);
     k_thread_name_set(&bu_strip_thread, "bu_strip");
 
-    LOG_INF("BRINGUP(PATTERN): static R/G/B/white/checker/walk @ 400 ms; "
-            "blue LED 1 Hz + 3-blink boot, solid on key");
+    LOG_INF("BRINGUP(BLEFIX): USB endpoint DISABLED (pure BLE); blue LED = "
+            "4 blinks boot, double-blip = not connected, 1 Hz = connected, "
+            "solid 600 ms = key press");
 }
 
 void bringup_key_event(int8_t key_index, bool pressed) {

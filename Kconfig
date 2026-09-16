@@ -68,4 +68,27 @@ config ZMK_RGB_PLAYER_BTDIAG
       Turn this off once the question is answered: it costs a thread, a
       connection callback and a key-press subscription.
 
+config ZMK_RGB_PLAYER_CHAINPROBE
+    bool "WS2812 daisy-chain inspector at boot"
+    default n
+    help
+      TEMPORARY diagnostic. Walks the strip one DATA INDEX at a time instead
+      of running an effect: index 0 lights RED for 3 s, then indices 1..14
+      each light for 0.9 s in their own colour, then the cycle repeats.
+      Press any key to exit and hand the strip back to the normal effect.
+
+      It exists because a multimeter cannot resolve WS2812 topology:
+      continuity beeps straight through the ESD clamp diodes (DIN pad ->
+      diode -> common VDD rail -> another pad's diode -> its DIN), through a
+      live supply, and through the 0.5 mm-pitch pins of a TXS0102 that
+      cannot be probed one at a time. The strip itself is the only observer
+      that sees whether data actually arrived.
+
+      Three outcomes, three different faults - see the file header of
+      src/chainprobe.c for the full table. In short: one LED walking along
+      the strip = healthy chain; ALL 15 lighting together = the DINs are
+      tied in a BUS (a board fault, fixed by cutting the net, not by adding
+      a jumper); one LED only at the RED step = the chain breaks right
+      after its DOUT.
+
 endif # ZMK_RGBEFFECT

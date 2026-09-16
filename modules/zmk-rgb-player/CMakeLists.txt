@@ -12,6 +12,7 @@ target_sources(app PRIVATE
     src/mode_c.c
     src/bringup.c
     src/btdiag.c
+    src/chainprobe.c
     src/module_init.c
     src/behaviors/behavior_bri_dual_hold.c
     src/behaviors/behavior_hue_dual_hold.c

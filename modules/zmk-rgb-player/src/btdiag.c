@@ -30,11 +30,11 @@
  *
  * HOW TO READ THE BLUE LED (P0.15)
  *
- *   boot            : TWELVE quick blinks. This is the build signature and
+ *   boot            : THIRTEEN quick blinks. This is the build signature and
  *                     the only reliable way to tell which build is flashed -
- *                     COMBOFIX2 TWELVE, BRIWRAP ELEVEN, COMBOFIX TEN, USBRGB
- *                     NINE, PAIRFIX EIGHT, LATFIX SEVEN, KPTEST SIX,
- *                     LAYERS / HIDCHK FIVE.
+ *                     HSVFIX THIRTEEN, COMBOFIX2 TWELVE, BRIWRAP ELEVEN,
+ *                     COMBOFIX TEN, USBRGB NINE, PAIRFIX EIGHT, LATFIX SEVEN,
+ *                     KPTEST SIX, LAYERS / HIDCHK FIVE.
  *
  *   each key press  : 1..5 blinks encoding the WORST-CASE link latency, i.e.
  *                     interval x (latency + 1) - the longest a keystroke can
@@ -88,7 +88,7 @@
 #define BD_ON_MS        60
 #define BD_GAP_MS       60
 #define BD_SETTLE_MS   400
-#define BD_BOOT_BLINKS  12
+#define BD_BOOT_BLINKS  13
 #define BD_POST_BOOT_MS 600
 
 static const struct gpio_dt_spec bd_led = GPIO_DT_SPEC_GET(DT_NODELABEL(blue_led), gpios);

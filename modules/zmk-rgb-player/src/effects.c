@@ -128,7 +128,18 @@ static struct led_rgb hsv_to_rgb(uint16_t h, uint8_t s, uint8_t v) {
     struct led_rgb c = {0, 0, 0};
     if (s == 0) { c.r = c.g = c.b = v; return c; }
     uint8_t region = h / 60;
-    uint8_t rem    = (h - region * 60) * 6;
+    /* Scale the in-region offset (0..59) into 0..255 so the (s * rem) >> 8
+     * products below stay inside the 8-bit range.
+     *
+     * BUG FIXED HERE: this was `* 6`. That factor belongs to the classic
+     * 8-bit-hue snippet, where h is 0..255 and region = h / 43 - there the
+     * remainder is 0..42 and * 6 lands in 0..252. Here h is 0..359 and
+     * region = h / 60, so the remainder is 0..59 and the correct factor is
+     * 255 / 60 = 4.25. With * 6 the product reached 354, and rem is a
+     * uint8_t, so everything >= 256 wrapped modulo 256. Hue therefore mapped
+     * to a scrambled, non-monotonic colour and the rainbow effect looked like
+     * random flickering - which is exactly what was reported. */
+    uint8_t rem = (uint8_t)(((h - region * 60) * 255) / 60);
     uint8_t p = (v * (255 - s)) >> 8;
     uint8_t q = (v * (255 - ((s * rem) >> 8))) >> 8;
     uint8_t t = (v * (255 - ((s * (255 - rem)) >> 8))) >> 8;

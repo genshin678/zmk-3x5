@@ -1,7 +1,7 @@
 /*
  * behavior_bt_clear_bonds.c
  *
- * Combo behavior: U + M + O + . pressed together -> clear all BLE bonds.
+ * Combo behavior: O + . held together for 2 s -> clear all BLE bonds.
  *
  * ===========================================================================
  * THIS FILE USED TO BE WRONG, AND IT COST A PAIRING ROUND
@@ -65,7 +65,7 @@
  *
  * This is the very function ZMK's stock `&bt BT_CLR_ALL` calls, so this combo
  * now has semantics identical to the official behavior - it is simply bound to
- * a 4-key combo instead of a dedicated key.
+ * a 2-key combo instead of a dedicated key.
  *
  * After this runs, zmk_ble_profile_is_open() is true, so
  * auth_pairing_accept() returns BT_SECURITY_ERR_SUCCESS and a host can pair.
@@ -81,19 +81,41 @@
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
-static int on_pressed(struct zmk_behavior_binding *binding,
-                      struct zmk_behavior_binding_event event) {
+/* The combo went from four keys (U+M+O+., which never fit inside the combo
+ * timeout and was therefore dead) to two. Two keys are reachable BY ACCIDENT,
+ * and this operation cannot be undone - every bond is gone and every host has
+ * to be paired again. So it now needs a deliberate hold, same shape as
+ * behavior_dfu_combo.c: schedule on press, cancel on release. */
+#define BT_CLR_HOLD_MS 2000
+
+static bool combo_held;
+static struct k_work_delayable bt_clr_hold_work;
+
+static void fire_clear(struct k_work *w) {
+    ARG_UNUSED(w);
+    if (!combo_held) {
+        return;
+    }
     /* NOT bt_unpair() on its own. zmk_ble_clear_all_bonds() is the complete
      * operation: for every profile it calls bt_unpair() AND
      * set_profile_address(ANY) - the second call is what marks the profile
      * "open" so ZMK stops rejecting pairing requests - then it selects
      * profile 0 and restarts general connectable advertising. */
     zmk_ble_clear_all_bonds();
+}
+
+static int on_pressed(struct zmk_behavior_binding *binding,
+                      struct zmk_behavior_binding_event event) {
+    combo_held = true;
+    k_work_init_delayable(&bt_clr_hold_work, fire_clear);
+    k_work_schedule(&bt_clr_hold_work, K_MSEC(BT_CLR_HOLD_MS));
     return 0;
 }
 
 static int on_released(struct zmk_behavior_binding *binding,
                        struct zmk_behavior_binding_event event) {
+    combo_held = false;
+    k_work_cancel_delayable(&bt_clr_hold_work);
     return 0;
 }
 

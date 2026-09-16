@@ -10,8 +10,9 @@
  *   Y / P / H / ; / N / /  are in held-combos:
  *     Hold Y+P    → brightness loop (+1/100ms while held)
  *     Hold H+;    → hue loop       (+8deg/100ms while held)
- *     Hold Y+N+P+/ → cycle to next effect (effect 0=OFF,1=静态,2=呼吸,3=彩虹,4=单点亮,5=星光,6=波纹)
+ *     Hold Y+N    → cycle to next effect (0=OFF,1=静态,2=呼吸,3=彩虹,4=单点亮,5=星光,6=波纹)
  *     Hold P+N 3s → reboot into DFU bootloader
+ *     Hold O+. 2s → clear every BLE bond
  *   While held, their normal letter is suppressed.
  *
  * Inner 9 keys (U I O J K L M , .):
@@ -25,12 +26,12 @@
  * === Combos ===
  *   bri_combo   (Y+P)     → bri_dual   (suppresses both, no letter sent)
  *   hue_combo   (H+;)     → hue_dual   (suppresses both, no letter sent)
- *   eff_combo   (Y+N+P+/) → effect_cycle (suppresses all 4 corners)
+ *   eff_next_combo (Y+N)  → effect_cycle (suppresses both)
  *   dfu_combo   (P+N)     → dfu_combo  (3s hold → DFU)
  *   out_combo   (I+K)     → &out OUT_TOG (flip the output endpoint USB↔BLE;
  *                            needed while plugged in for power, see the block
  *                            comment where the combo is defined)
- *   bt_clr_combo (U+M+O+.) → bt_clear   (wipe every BLE bond, go pairable)
+ *   bt_clr_combo (O+.)     → bt_clear   (held 2 s: wipe every BLE bond)
  *       PAIRFIX: the bound behavior used to call only bt_unpair(), which left
  *       ZMK's profiles[] still holding the old address, so ZMK refused every
  *       pairing request with BT_SECURITY_ERR_PAIR_NOT_ALLOWED. It now calls
@@ -231,11 +232,33 @@
             bindings = <&hue_dual>;
         };
 
-        /* 4 corners Y+N+P+/ pressed together → cycle to next effect */
-        eff_combo {
+        /* Y+N pressed together → cycle to next effect (… 6 → 0 OFF → 1 …).
+         *
+         * WHY NOT THE FOUR CORNERS ANY MORE (was key-positions <0 4 10 14>):
+         * a 4-key combo needs all four keys down within timeout-ms of the FIRST
+         * press, and 80 ms is nowhere near achievable across the whole board.
+         * Worse, it poisoned every other combo sharing a corner. ZMK's
+         * position_state_down() only calls cleanup() - i.e. activates the
+         * binding - when num_candidates == 1:
+         *
+         *     if (candidate_is_completely_pressed(candidate_combo)) {
+         *         fully_pressed_combo = i;
+         *         if (num_candidates == 1) { cleanup(); }
+         *     }
+         *
+         * With the corners combo alive, pressing P then N left TWO candidates
+         * (dfu_combo and eff_combo), so nothing activated on press: the combo
+         * only fired at the 80 ms timeout, or on release - and on release
+         * release_combo_key() released the binding in the same event, so
+         * behavior_dfu_combo.c cancelled its own 3 s timer before it could ever
+         * fire. "Holding P+N did nothing" was exactly that.
+         *
+         * Two keys that are already in a combo elsewhere cost nothing extra, so
+         * this adds no new captured key: Y is in bri_combo, N is in dfu_combo. */
+        eff_next_combo {
             timeout-ms = <80>;
             require-prior-idle-ms = <200>;
-            key-positions = <0 4 10 14>;
+            key-positions = <0 10>;
             bindings = <&effect_cycle>;
         };
 
@@ -252,14 +275,24 @@
             bindings = <&dfu_combo>;
         };
 
-        /* U+M+O+. pressed together -> clear EVERY BLE bond, then go back to
-         * general discoverable advertising (bound to zmk_ble_clear_all_bonds(),
-         * i.e. ZMK's stock &bt BT_CLR_ALL semantics). Required after changing
-         * hosts; also the fix for the "cannot pair" state PAIRFIX addressed. */
+        /* O+. HELD 2 seconds -> clear EVERY BLE bond, then go back to general
+         * discoverable advertising (bound to zmk_ble_clear_all_bonds(), i.e.
+         * ZMK's stock &bt BT_CLR_ALL semantics). Required after changing hosts;
+         * also the fix for the "cannot pair" state PAIRFIX addressed.
+         *
+         * Was U+M+O+. (four keys) - dead for the same reason eff_combo was:
+         * four keys will not land inside an 80 ms window. Now two keys, which
+         * are also physically adjacent (positions 3 and 13 are the same
+         * column, one row apart), so they are easy to press together.
+         *
+         * The 2 s hold lives in behavior_bt_clear_bonds.c and is what keeps
+         * this from being dangerous: dropping a combo to 2 keys makes it
+         * accidentally reachable, and wiping every bond is not undoable.
+         * U and M are now free of any combo - 3 fewer captured keys. */
         bt_clr_combo {
             timeout-ms = <80>;
             require-prior-idle-ms = <200>;
-            key-positions = <1 3 11 13>;
+            key-positions = <3 13>;
             bindings = <&bt_clear>;
         };
 

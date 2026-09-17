@@ -152,23 +152,33 @@
          * SPI BYTE (ws2812_spi_ser(): buf[i] = bit ? one_frame : zero_frame,
          * 8 bytes per colour channel), so a pulse is 3 or 1 SPI bits wide:
          *
-         *   clock    T1H = 3 bits    T0H = 1 bit       WS bit = 8 bits
-         *   4.0 MHz  0.75 us (ok)    0.25 us (at the  2.00 us
-         *                            datasheet MIN)
-         *   3.2 MHz  0.94 us (ok)    0.31 us (ok)     2.50 us   <- used here
-         *   WS2812B  0.65-0.95 us    0.25-0.55 us     >= 0.65 us
+         *   1-pulse: 0x70 = 0111_0000    0-pulse: 0x40 = 0100_0000
+         *   T1H = 3 SPI bits,  T0H = 1 SPI bit,  WS bit = 8 SPI bits
          *
-         * 1-pulse: 0x70 = 0111_0000    0-pulse: 0x40 = 0100_0000
+         *   clock   T1H = 3 bits    T0H = 1 bit      WS bit = 8 bits
+         *   4 MHz   0.75 us         0.25 us          2.00 us  <- NEW board (AHCT1G125)
+         *   2 MHz   1.50 us *       0.50 us          4.00 us  <- this build (TXS0102)
+         *   WS2812B 0.65-0.95 us    0.25-0.55 us     >= 0.65 us
+         *     (*) 1.50 us EXCEEDS the 0.95 us MAX. It still decodes as "1" on
+         *         tolerant dies (HIGH >> 0.55 us threshold) but is out of spec
+         *         and 3.2x slower than the 1.25 us nominal bit.
          *
-         * WHY NOT 4 MHz: the data runs through U1 (TXS0102), whose high level
-         * is only pulled up by a ~10k internal resistor (plus a one-shot edge
-         * accelerator). Crossing the LED's input threshold costs ~100-150 ns
-         * on that line, which at 4 MHz eats the margin of a "1" bit
-         * (0.75 us -> effectively ~0.60-0.65 us, i.e. outside the 0.65 us
-         * minimum) and can flip a "1" to a "0". At 3.2 MHz the same "1" still
-         * measures ~0.80 us at the LED pin. If U1 is ever bypassed (P1.04 ->
-         * DIN through 33-100R), 4 MHz becomes safe again. */
-        spi-max-frequency = <3200000>;
+         * CRITICAL - nRF52840 SPIM frequency is DISCRETE (125k/250k/500k/1M/
+         * 2M/4M/8M/16M/32M). Zephyr's get_nrf_spim_frequency() FLOORS the
+         * requested value to the nearest supported one. The previous
+         * <3200000> did NOT run at 3.2 MHz - it was silently floored to 2 MHz
+         * (the basis of the old timing comment was never the real clock).
+         * Always specify an EXACT supported frequency.
+         *
+         * This build keeps 2 MHz because U1(TXS0102) was removed and P1.04 now
+         * drives the 5V LEDs directly at MCU 3.3V (no level shifter). At the
+         * marginal 3.3V < 3.5V threshold, 2 MHz's long 1.5us T1H is decoded
+         * more reliably than 4 MHz's 0.75us would be - raising the clock would
+         * make decode WORSE, not better. The NEW board adds 74AHCT1G125 (5V
+         * push-pull) and there sets spi-max-frequency = <4000000>:
+         * for a centred T1H=0.75 us (0.65-0.95 window) and T0H=0.25 us (MIN,
+         * safe with clean edges). */
+        spi-max-frequency = <2000000>;
 
         spi-one-frame = <0x70>;
         spi-zero-frame = <0x40>;
@@ -179,8 +189,12 @@
          * that between frames, so this is pure insurance. */
         reset-delay = <300>;
 
-        /* WS2812B */
-        chain-length = <15>; /* 15 LEDs: 5 per row × 3 rows */
+        /* WS2812B chain length. TEMPORARY: this build targets the 4-pixel
+         * bring-up board used to validate the new ST-1209RGB LED plus the
+         * MT3608 5V rail and 74AHCT1G125 level shifter, ahead of committing
+         * the TOPOLOGY-SAFE full 15-pixel board. Restore to <15> before the
+         * real board is populated (and re-check LED_PIXEL_COUNT below). */
+        chain-length = <4>; /* 4 LEDs: bring-up test board */
         color-mapping = <LED_COLOR_ID_GREEN
                          LED_COLOR_ID_RED
                          LED_COLOR_ID_BLUE>;

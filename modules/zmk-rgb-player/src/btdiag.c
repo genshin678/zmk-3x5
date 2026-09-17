@@ -88,7 +88,7 @@
 #define BD_ON_MS        60
 #define BD_GAP_MS       60
 #define BD_SETTLE_MS   400
-#define BD_BOOT_BLINKS  14
+#define BD_BOOT_BLINKS  15
 #define BD_POST_BOOT_MS 600
 
 static const struct gpio_dt_spec bd_led = GPIO_DT_SPEC_GET(DT_NODELABEL(blue_led), gpios);

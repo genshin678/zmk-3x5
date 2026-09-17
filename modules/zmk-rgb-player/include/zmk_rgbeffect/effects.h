@@ -15,8 +15,10 @@ typedef enum {
     RGB_EFFECT_COUNT        = 7
 } rgb_effect_t;
 
+/* TEMPORARY: keep in step with chain-length and led_pixel.h (here 4-pixel
+ * bring-up board). Not derived from devicetree - change all three together. */
 #ifndef LED_PIXEL_COUNT
-#define LED_PIXEL_COUNT 15
+#define LED_PIXEL_COUNT 4
 #endif
 
 int  effects_init(void);

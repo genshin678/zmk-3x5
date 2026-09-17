@@ -20,8 +20,8 @@
  *   index 0  - RED,   held 3.0 s   (long, so you cannot miss it)
  *   index 1  - GREEN, held 0.9 s
  *   index 2  - BLUE,  held 0.9 s
- *   ... through index 14, each in a distinct colour
- *   then 1.5 s all-off, and the 15-step cycle repeats
+ *   index 3  - WHITE, held 0.9 s   (TEMPORARY: 4-pixel bring-up board)
+ *   then 1.5 s all-off, and the 4-step cycle repeats
  *
  * Press any key to stop; the strip is handed back to the normal effect
  * (CONFIG_ZMK_RGB_PLAYER_DEFAULT_EFFECT) so the board stays usable.
@@ -32,8 +32,8 @@
  *    advances the lit LED walks along the strip.
  *    -> Healthy daisy chain. The strip was never the problem; stop here.
  *
- * B) At the RED step ALL 15 light up together (all red), and every later
- *    step also lights all 15 in that step's colour.
+ * B) At the RED step ALL FOUR light up together (all red), and every later
+ *    step also lights all four in that step's colour.
  *    -> BUS topology, not a chain: every DIN is tied to the same net. Every
  *       LED receives identical data, so the firmware can never address them
  *       individually. This is a LAYOUT/BOARD fault. The fix is to cut the
@@ -50,9 +50,10 @@
  *    -> Note which physical position the red one occupied: that is your
  *       data index 0, and it is where the chain starts counting from.
  *
- * Note on colours: values are capped at 180/255 so that outcome B (all 15
- * lit at once) stays near 600 mA rather than 900 mA. One LED at a time is
- * about 40 mA, which any supply can handle.
+ * Note on colours: values are capped at 180/255 so that outcome B (all LEDs
+ * lit at once) stays well inside the supply budget - and at 4 pixels the cap
+ * is generous anyway: even all four white is well under 100 mA on the
+ * ST-1209RGB (5 mA/channel class), versus hundreds of mA with WS2812B 5050.
  */
 
 #include <zephyr/kernel.h>
@@ -78,23 +79,15 @@ K_THREAD_STACK_DEFINE(cp_stack, CP_STACK_SIZE);
 static struct k_thread cp_thread;
 static volatile bool cp_running;
 
-/* One colour per data index, all components <= 180 (see file header). */
+/* One colour per data index, all components <= 180 (see file header).
+ * TEMPORARY: exactly LED_PIXEL_COUNT (=4) rows - this array is sized from
+ * LED_PIXEL_COUNT, so adding rows here without restoring the count breaks the
+ * build. Restore all 15 rows together with chain-length / LED_PIXEL_COUNT. */
 static const uint8_t cp_pal[LED_PIXEL_COUNT][3] = {
     {180,   0,   0},   /*  0 red        */
     {  0, 180,   0},   /*  1 green      */
     {  0,   0, 180},   /*  2 blue       */
-    {180, 180,   0},   /*  3 yellow     */
-    {  0, 180, 180},   /*  4 cyan       */
-    {180,   0, 180},   /*  5 magenta    */
-    {180, 180, 180},   /*  6 white      */
-    {180,  60,   0},   /*  7 orange     */
-    {100,   0, 180},   /*  8 violet     */
-    {  0, 180, 100},   /*  9 spring     */
-    {180,  90,  90},   /* 10 pink       */
-    { 90, 180,   0},   /* 11 lime       */
-    {  0,  90, 180},   /* 12 azure      */
-    {180,   0,  90},   /* 13 rose       */
-    { 90,  90, 180},   /* 14 periwinkle */
+    {180, 180, 180},   /*  3 white      */
 };
 
 static void cp_all_off(void) {

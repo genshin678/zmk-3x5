@@ -196,8 +196,9 @@
          * the MT3608 5V rail and 74AHCT1G125 level shifter. The timing above
          * is the ST-1209RGB-compliant 8 MHz / 0x7C / 0x60 waveform, confirmed
          * against the vendor datasheet (T0H 0.295us / T1H 0.595us) and now
-         * against the silicon: CHAINPROBE17 asked for solid RED and the strip
-         * answered GREEN, in the same frame where solid BLUE answered blue.
+         * against the silicon: the split-frame test asked for solid RED and
+         * the strip answered GREEN, in the same frame where solid BLUE
+         * answered blue.
          * A byte-exact magnitude surviving the round trip (200/255 arriving as
          * a saturated channel, not white and not black) is the strongest proof
          * that the 8 MHz bit encoding is right; the lone R<->G transposition is

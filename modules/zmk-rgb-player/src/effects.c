@@ -59,12 +59,11 @@ LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
  * matrix scan and delayed input by up to a frame. At 20 ms that is ~6% of the
  * input path's own thread spent pushing pixels.
  *
- * Nobody could notice while the strip was dark, which is why it survived
- * several revisions: the engine was inert under
- * CONFIG_ZMK_RGB_PLAYER_BRINGUP, and LATFIX had the strip thread switched off.
- * The moment the engine went live again (USBRGB) the load became real - which
- * is exactly why "the lights work now" and "input got slower" arrived in the
- * same report.
+ * Nobody could notice while the strip was dark: the engine was inert in
+ * the bring-up builds, and the latency work had the strip thread switched
+ * off. The moment the engine went live again the load became real - which
+ * is why "the lights work now" and "input got slower" arrived in the same
+ * report.
  *
  * A dedicated thread at a priority BELOW the workqueue makes the ordering
  * permanent: the workqueue outranks it, so a scan that becomes ready preempts
@@ -72,11 +71,10 @@ LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
  * read-out used the same reasoning - see the note in bringup.c on why both of
  * its threads were kept off the system workqueue.)
  *
- * Priority 12 sits below every radio path and below btdiag's 11:
+ * Priority 12 sits below every radio path:
  *   ZMK's BLE notify thread = 5    (CONFIG_ZMK_BLE_THREAD_PRIORITY)
  *   Zephyr's BT host RX     = 8    (CONFIG_BT_RX_PRIO)
- *   btdiag blue-LED probe   = 11
- *   this render thread      = 12   <- below all of them
+ *   this render thread      = 12   <- below both of them
  *   Zephyr's idle thread    = 15
  * A 50 fps animation is the least urgent thing on the board. */
 #define EFFECTS_THREAD_PRIORITY 12
@@ -318,20 +316,10 @@ void effects_tick_stop(void) {
 }
 
 void effects_set_active(rgb_effect_t e) {
-#if defined(CONFIG_ZMK_RGB_PLAYER_BRINGUP) || defined(CONFIG_ZMK_RGB_PLAYER_CHAINPROBE)
+#if defined(CONFIG_ZMK_RGB_PLAYER_BRINGUP)
     /* Bring-up build: src/bringup.c owns the strip so that every LED you
      * observe has exactly one meaning. Effect switching is intentionally inert
-     * until CONFIG_ZMK_RGB_PLAYER_BRINGUP is turned back off.
-     *
-     * Chain-inspector build: src/chainprobe.c owns the strip for exactly the
-     * same reason, and this gate is what makes its diagnosis airtight. Starting
-     * the render tick from here would put a SECOND writer on the strip and -
-     * worse - make a smooth rainbow possible again, which is the one state that
-     * has three times been mistaken for "the probe never ran".
-     *
-     * With this gate the effects thread is never even created under CHAINPROBE,
-     * so the probe is provably the only writer. A gradient rainbow can then
-     * only mean the wrong image is flashed, and that is a useful answer. */
+     * until CONFIG_ZMK_RGB_PLAYER_BRINGUP is turned back off. */
     ARG_UNUSED(e);
     return;
 #endif

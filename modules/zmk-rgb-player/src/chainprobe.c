@@ -24,8 +24,20 @@
  *   index 14 - pink,   held 0.9 s
  *   then 1.5 s all-off, and the 15-step cycle repeats
  *
- * Press any key to stop; the strip is handed back to the normal effect
- * (CONFIG_ZMK_RGB_PLAYER_DEFAULT_EFFECT) so the board stays usable.
+ * HOLD any key for 0.6 s to stop; the strip is then handed back to the normal
+ * effect (CONFIG_ZMK_RGB_PLAYER_DEFAULT_EFFECT) so the board stays usable.
+ *
+ * Two guards keep this inspection alive, because on this board it kept losing
+ * a race it could not see:
+ *
+ *   1. A 3 s grace window after boot during which EVERY key event is dropped.
+ *      A floating matrix input (or a gated rail still coming up) reports a
+ *      keypress at boot; the earlier code acted on it while the probe was
+ *      still inside its 400 ms settle sleep, so the probe exited before it
+ *      lit a single LED and the only thing ever seen on the strip was the
+ *      fallback rainbow effect.
+ *   2. A deliberate HOLD of 0.6 s to stop, so neither a phantom event at
+ *      boot nor a key you brush while probing can end the run.
  *
  * HOW TO READ IT - three outcomes, three different faults
  * -------------------------------------------------------
@@ -75,10 +87,21 @@
 #define CP_STEP_HOLD_MS     900
 #define CP_GAP_MS           250
 #define CP_CYCLE_PAUSE_MS   1500
+#define CP_SLICE_MS         100     /* sleep granularity, so a hold is seen  */
+#define CP_EXIT_GRACE_MS    3000    /* drop ALL key events for this long     */
+#define CP_EXIT_HOLD_MS     600     /* a key must be HELD this long to stop  */
 
 K_THREAD_STACK_DEFINE(cp_stack, CP_STACK_SIZE);
 static struct k_thread cp_thread;
 static volatile bool cp_running;
+
+/* Exit-gesture state. Written on the input path, read by the render thread.
+ * uint32_t and not int64_t: a 64-bit store is two 32-bit stores on Cortex-M4
+ * and can tear, which would hand the reader a garbage timestamp and stop the
+ * run instantly. Unsigned subtraction wraps cleanly, so this is safe. */
+static volatile bool     cp_armed;          /* false during the grace window */
+static volatile bool     cp_key_down;
+static volatile uint32_t cp_key_down_ts;
 
 /* One colour per data index, all components <= 200 (see file header). This
  * array is sized from LED_PIXEL_COUNT (=15), so it must hold exactly 15 rows.
@@ -113,25 +136,56 @@ static void cp_show_index(int idx) {
     led_pixel_update();
 }
 
+/* The exit gesture: a key held for CP_EXIT_HOLD_MS, honoured only after the
+ * grace window has closed. Touches no peripheral. */
+static bool cp_exit_requested(void) {
+    if (!cp_armed || !cp_key_down) return false;
+    return ((uint32_t)k_uptime_get() - cp_key_down_ts) >= CP_EXIT_HOLD_MS;
+}
+
+/* Sleep in slices rather than one long block. A hold is then noticed within
+ * CP_SLICE_MS instead of only after the whole step, while the step timings
+ * stay exact because the slices still add up to `ms`. Returns false when the
+ * run must stop. */
+static bool cp_hold_ms(uint32_t ms) {
+    while (ms > 0) {
+        uint32_t slice = (ms > CP_SLICE_MS) ? CP_SLICE_MS : ms;
+        k_sleep(K_MSEC(slice));
+        ms -= slice;
+        if (!cp_running || cp_exit_requested()) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static void cp_thread_fn(void *p1, void *p2, void *p3) {
     ARG_UNUSED(p1);
     ARG_UNUSED(p2);
     ARG_UNUSED(p3);
 
-    k_sleep(K_MSEC(CP_START_DELAY_MS));
+    /* Settle the strip AND sit out the grace window. cp_armed stays false for
+     * this whole period, so cp_position_cb drops every key event and nothing
+     * can end the run before the first LED has lit. */
+    (void)cp_hold_ms(CP_START_DELAY_MS + CP_EXIT_GRACE_MS);
+    cp_armed = true;
 
     while (cp_running) {
-        for (int i = 0; i < LED_PIXEL_COUNT; i++) {
-            if (!cp_running) break;
+        bool keep_going = true;
+
+        for (int i = 0; i < LED_PIXEL_COUNT && keep_going; i++) {
             cp_show_index(i);
-            k_sleep(K_MSEC(i == 0 ? CP_HEAD_HOLD_MS : CP_STEP_HOLD_MS));
+            keep_going = cp_hold_ms(i == 0 ? CP_HEAD_HOLD_MS : CP_STEP_HOLD_MS);
+            if (!keep_going) break;
             cp_all_off();
-            k_sleep(K_MSEC(CP_GAP_MS));
+            keep_going = cp_hold_ms(CP_GAP_MS);
         }
-        if (!cp_running) break;
-        k_sleep(K_MSEC(CP_CYCLE_PAUSE_MS));
+
+        if (!keep_going) break;
+        if (!cp_hold_ms(CP_CYCLE_PAUSE_MS)) break;
     }
 
+    cp_armed = false;
     cp_all_off();
 
     /* Hand the strip back. Without this the board would stay dark after the
@@ -139,16 +193,30 @@ static void cp_thread_fn(void *p1, void *p2, void *p3) {
     effects_set_active((rgb_effect_t)CONFIG_ZMK_RGB_PLAYER_DEFAULT_EFFECT);
 }
 
-/* Any key press ends the inspection and restores normal operation. Runs in
- * the input path, so it only sets a flag - no SPI, no logging. */
+/* Tracks the exit gesture. Runs on the input path, so it only records state -
+ * no SPI, no logging, no blocking. */
 static int cp_position_cb(const zmk_event_t *eh) {
     const struct zmk_position_state_changed *ev = as_zmk_position_state_changed(eh);
 
     if (ev == NULL) {
         return ZMK_EV_EVENT_BUBBLE;
     }
+
+    /* During the grace window every event is dropped. That is the whole point:
+     * whatever the matrix reports at boot must not be able to end the run, and
+     * dropping it also means a key that reads as held from power-on never
+     * satisfies the hold gesture later. */
+    if (!cp_armed) {
+        return ZMK_EV_EVENT_BUBBLE;
+    }
+
     if (ev->state) {
-        cp_running = false;
+        if (!cp_key_down) {
+            cp_key_down = true;
+            cp_key_down_ts = (uint32_t)k_uptime_get();
+        }
+    } else {
+        cp_key_down = false;
     }
     return ZMK_EV_EVENT_BUBBLE;
 }

@@ -148,40 +148,42 @@
          *   devicetree error: 'reg' is marked as required in 'properties:' */
         reg = <0>;
 
-        /* Zephyr's ws2812_spi driver serialises ONE WS2812 bit into ONE FULL
-         * SPI BYTE (ws2812_spi_ser(): buf[i] = bit ? one_frame : zero_frame,
-         * 8 bytes per colour channel), so a pulse is 3 or 1 SPI bits wide:
+        /* ST-1209RGB timing (the LED on this bring-up board), per vendor
+         * datasheet - it is NOT WS2812B-speed-compatible:
+         *   T0H 0.295us  T1H 0.595us  bit period 0.89us (1124 kHz)
+         *   valid windows:  T0H 0.245-0.345  T1H 0.545-0.645
+         *   discriminator ~0.445us  (midpoint of the two high-time windows)
+         *   F_DIN max 1100 kHz -> the die can only run SLOWER than nominal
+         *   wire colour order: R,G,B MSB-first (NOT WS2812B's GRB)
          *
-         *   1-pulse: 0x70 = 0111_0000    0-pulse: 0x40 = 0100_0000
-         *   T1H = 3 SPI bits,  T0H = 1 SPI bit,  WS bit = 8 SPI bits
+         * Zephyr's ws2812_spi serialises ONE WS2812 bit into ONE FULL SPI BYTE
+         * (ws2812_spi_ser(): buf[i] = bit ? one_frame : zero_frame, 8 bytes per
+         * channel), so a '1' pulse is N high SPI bits wide, a '0' is M high SPI
+         * bits. With the DISCRETE nRF clock (125k..32M, Zephyr FLOORS the
+         * request), only 8 MHz yields integer N,M that BOTH land inside the
+         * ST-1209RGB windows:
          *
-         *   clock   T1H = 3 bits    T0H = 1 bit      WS bit = 8 bits
-         *   4 MHz   0.75 us         0.25 us          2.00 us  <- NEW board (AHCT1G125)
-         *   2 MHz   1.50 us *       0.50 us          4.00 us  <- this build (TXS0102)
-         *   WS2812B 0.65-0.95 us    0.25-0.55 us     >= 0.65 us
-         *     (*) 1.50 us EXCEEDS the 0.95 us MAX. It still decodes as "1" on
-         *         tolerant dies (HIGH >> 0.55 us threshold) but is out of spec
-         *         and 3.2x slower than the 1.25 us nominal bit.
+         *   clock   T1H (bits)    T0H (bits)     bit period     verdict
+         *   8 MHz   0.625us (5)   0.250us (2)    1.00us/1000k  OK  both in window
+         *   4 MHz   0.75us (3)    0.25us (1)     2.00us/500k   T1H +0.105us out
+         *   2 MHz   1.50us (3)    0.50us (1)     4.00us/250k   T0H > 0.445 -> ALL 1
          *
-         * CRITICAL - nRF52840 SPIM frequency is DISCRETE (125k/250k/500k/1M/
-         * 2M/4M/8M/16M/32M). Zephyr's get_nrf_spim_frequency() FLOORS the
-         * requested value to the nearest supported one. The previous
-         * <3200000> did NOT run at 3.2 MHz - it was silently floored to 2 MHz
-         * (the basis of the old timing comment was never the real clock).
-         * Always specify an EXACT supported frequency.
+         * At 2 MHz T0H=0.50us exceeds the ST-1209RGB discriminator (~0.445us),
+         * so every bit decodes as '1' -> strip shows solid white / no walk.
+         * At 8 MHz both highs sit inside their windows (T0H=0.250 is only 5ns
+         * above the 0.245 floor - the sole residual margin; verify on-board).
+         * 16/32 MHz would need >7 high bits for T1H - impossible in one byte.
          *
-         * This build keeps 2 MHz because U1(TXS0102) was removed and P1.04 now
-         * drives the 5V LEDs directly at MCU 3.3V (no level shifter). At the
-         * marginal 3.3V < 3.5V threshold, 2 MHz's long 1.5us T1H is decoded
-         * more reliably than 4 MHz's 0.75us would be - raising the clock would
-         * make decode WORSE, not better. The NEW board adds 74AHCT1G125 (5V
-         * push-pull) and there sets spi-max-frequency = <4000000>:
-         * for a centred T1H=0.75 us (0.65-0.95 window) and T0H=0.25 us (MIN,
-         * safe with clean edges). */
-        spi-max-frequency = <2000000>;
+         * CRITICAL - nRF52840 SPIM is DISCRETE (125k/250k/500k/1M/2M/4M/8M/
+         * 16M/32M). Zephyr's get_nrf_spim_frequency() FLOORS the request. The
+         * old <3200000> was silently floored to 2 MHz. Always write an EXACT
+         * supported value (here 8000000). */
+        spi-max-frequency = <8000000>;
 
-        spi-one-frame = <0x70>;
-        spi-zero-frame = <0x40>;
+        /* 0x7C = 0111_1100 (5 high bits -> T1H 0.625us)
+         * 0x60 = 0110_0000 (2 high bits -> T0H 0.250us) */
+        spi-one-frame = <0x7C>;
+        spi-zero-frame = <0x60>;
 
         /* Latch gap after each frame. The classic WS2812B needs > 50 us, but
          * the newer WS2812B-V5 die needs >= 280 us before it latches, and this
@@ -195,8 +197,8 @@
          * the TOPOLOGY-SAFE full 15-pixel board. Restore to <15> before the
          * real board is populated (and re-check LED_PIXEL_COUNT below). */
         chain-length = <4>; /* 4 LEDs: bring-up test board */
-        color-mapping = <LED_COLOR_ID_GREEN
-                         LED_COLOR_ID_RED
+        color-mapping = <LED_COLOR_ID_RED
+                         LED_COLOR_ID_GREEN
                          LED_COLOR_ID_BLUE>;
     };
 };

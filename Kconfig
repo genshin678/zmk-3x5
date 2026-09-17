@@ -30,4 +30,65 @@ config ZMK_RGB_PLAYER_BRINGUP
       While enabled, effect switching is inert and the strip has exactly one
       writer (src/bringup.c). Turn this off once the hardware is verified.
 
+config ZMK_RGB_PLAYER_DEFAULT_EFFECT
+    int "RGB effect active at boot"
+    default 3
+    range 0 6
+    help
+      Which effect the strip shows after boot. 0=OFF, 1=solid single colour,
+      2=breathing, 3=rainbow, 4=single-key, 5=twinkle, 6=ripple.
+
+      The 4-corner combo (Y+N+P+/) cycles through all seven at runtime, so this
+      only decides what you see before you ever press that combo. It matters
+      because the firmware default is 0 (OFF) and effects_init() does not start
+      the render tick on its own - without this setting the strip stays dark at
+      boot and that looks exactly like "the LEDs are broken".
+
+      Cost note: 0 (OFF) and 1 (solid) are near-free; the animated effects
+      re-render the strip on a tick (see effects.c), which is the single
+      largest optional current draw in this firmware. Set 0 for the longest
+      battery life.
+
+config ZMK_RGB_PLAYER_BTDIAG
+    bool "BLE link-latency probe on the blue LED"
+    default n
+    help
+      TEMPORARY diagnostic. Measures the connection parameters the host
+      actually granted - interval AND slave latency - and blinks the on-board
+      blue LED 1..5 times per key press, where the count encodes the worst-case
+      wait for a keystroke in ms (1: <=10, 2: <=20, 3: <=50, 4: <=100,
+      5: >100). A separate nine-blink boot signature identifies the build.
+
+      It exists because ZMK only advertises a connection-parameter PREFERENCE
+      and never asks the host to honour it (app/src/ble.c has no
+      bt_conn_le_param_update call at all), so "is the link slow because the
+      host relaxed it while idle" cannot be answered from Kconfig. It has to be
+      measured.
+
+      Turn this off once the question is answered: it costs a thread, a
+      connection callback and a key-press subscription.
+
+config ZMK_RGB_PLAYER_CHAINPROBE
+    bool "WS2812 daisy-chain inspector at boot"
+    default n
+    help
+      TEMPORARY diagnostic. Walks the strip one DATA INDEX at a time instead
+      of running an effect: index 0 lights RED for 3 s, then indices 1..14
+      each light for 0.9 s in their own colour, then the cycle repeats.
+      Press any key to exit and hand the strip back to the normal effect.
+
+      It exists because a multimeter cannot resolve WS2812 topology:
+      continuity beeps straight through the ESD clamp diodes (DIN pad ->
+      diode -> common VDD rail -> another pad's diode -> its DIN), through a
+      live supply, and through the 0.5 mm-pitch pins of a TXS0102 that
+      cannot be probed one at a time. The strip itself is the only observer
+      that sees whether data actually arrived.
+
+      Three outcomes, three different faults - see the file header of
+      src/chainprobe.c for the full table. In short: one LED walking along
+      the strip = healthy chain; ALL 15 lighting together = the DINs are
+      tied in a BUS (a board fault, fixed by cutting the net, not by adding
+      a jumper); one LED only at the RED step = the chain breaks right
+      after its DOUT.
+
 endif # ZMK_RGBEFFECT

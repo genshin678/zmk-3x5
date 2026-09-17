@@ -469,9 +469,12 @@ async function sendKeyDown(idx) {
   const keyName = IDX_TO_KEY[idx];
   const keyCode = KEYCHAR_TO_KEYCODE[keyName];
   if (!keyCode) return;
-  // USB HID Boot Report: 1 modifier + 6 reserved + keycode
+  // USB HID Boot Keyboard Protocol report = 8 bytes:
+  //   1 modifier bitmap + 1 reserved + 6 keycode slots.
+  // The keycode slots hold raw HID *usage IDs* (Keyboard/Keypad page 0x07).
+  // There is no "usage - 4" offset anywhere in this.
   const buf = new Uint8Array(8);
-  buf[2] = keyCode;
+  buf[2] = keyCode;   // first of the six keycode slots
   await hid.writeValue(buf);
   // 松开
   await new Promise(r => setTimeout(r, 60));
@@ -479,10 +482,13 @@ async function sendKeyDown(idx) {
   await hid.writeValue(buf2);
 }
 
-// 键盘字符 → USB HID scancode（Boot Protocol）
+// 键盘字符 → HID usage ID（Keyboard/Keypad page 0x07）
+// 修正记录：I 原写 0x0F、L 原写 0x0A —— 那是 L 和 G，属于同一类
+// 「把某个偏移量当成 usage ID」的错误。权威表见 config/zmk_3x5_bt.keymap
+// 的文件头注释，那张表是用真实构建的设备树 dump（bindings = <）验证过的。
 const KEYCHAR_TO_KEYCODE = {
-  'Y': 0x1C, 'U': 0x18, 'I': 0x0F, 'O': 0x12, 'P': 0x13,
-  'H': 0x0B, 'J': 0x0D, 'K': 0x0E, 'L': 0x0A, ';': 0x33,
+  'Y': 0x1C, 'U': 0x18, 'I': 0x0C, 'O': 0x12, 'P': 0x13,
+  'H': 0x0B, 'J': 0x0D, 'K': 0x0E, 'L': 0x0F, ';': 0x33,
   'N': 0x11, 'M': 0x10, ',': 0x36, '.': 0x37, '/': 0x38
 };
 

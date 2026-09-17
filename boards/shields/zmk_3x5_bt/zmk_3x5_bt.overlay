@@ -64,6 +64,39 @@
 
 };
 
+/*
+ * EXTERNAL POWER (3.3V/VCC RAIL) POLARITY - DO NOT REMOVE
+ * -------------------------------------------------------
+ * The nice!nano header pin driven by P0.13 is the switched 3.3V/VCC output.
+ * ZMK's stock board file (zephyr/boards/.../nice_nano.dts) declares it as
+ *
+ *     EXT_POWER { compatible = "zmk,ext-power-generic";
+ *                 control-gpios = <&gpio0 13 GPIO_ACTIVE_LOW>; };
+ *
+ * which is correct for a GENUINE nice!nano (P0.13 pulled LOW = rail ON).
+ * ZMK's driver unconditionally ENABLES external power at boot
+ * (ext_power_generic_init() -> ext_power_enable() -> gpio_pin_set_dt(gpio, 1)),
+ * so on a genuine board the rail comes up LOW = ON.
+ *
+ * THIS PCB's module has the OPPOSITE polarity - the vendor documentation for
+ * this board states: "当 P0.13 设置为低时，将关闭 3.3V - VCC 引脚的电源"
+ * (P0.13 LOW switches the rail OFF). Measured on the real board:
+ *   - DFU/reset  (P0.13 floating, external pull-up): 3.3 V present  -> ON
+ *   - firmware running (P0.13 driven LOW by ZMK):   ~0 V            -> OFF
+ * i.e. the stock polarity turned the WS2812B/TXS0102 supply OFF the moment
+ * ZMK booted, which is exactly the "LEDs never light" failure.
+ *
+ * Overriding with GPIO_ACTIVE_HIGH makes ZMK's "enabled" state drive P0.13
+ * HIGH = rail ON on this hardware, and keeps the &ext_power behavior
+ * (EP_ON/EP_OFF/EP_TOG) working with correct semantics.
+ *
+ * NOTE: &{/EXT_POWER} (path reference) is used because the board file defines
+ * the node without a label - &EXT_POWER would not resolve.
+ */
+&{/EXT_POWER} {
+    control-gpios = <&gpio0 13 GPIO_ACTIVE_HIGH>;
+};
+
 &pinctrl {
     /* SPI3 = nRF52840 high-speed SPI (the only SPIM that can drive P1.x pins;
      * SPIM0/1/2 are P0-only). WS2812B data is on P1.04, so SPIM3 is mandatory.
@@ -107,21 +140,66 @@
          *   but is not declared in 'properties:' in worldsemi,ws2812-spi.yaml
          */
 
-        /* SPI */
-        reg = <0>; /* ignored, but required by the SPI device binding */
-        spi-max-frequency = <4000000>;
+        /* SPI
+         *
+         * reg is required by the worldsemi,ws2812-spi binding (the value is
+         * ignored - the driver shifts out over MOSI) but omitting it aborts
+         * the build with:
+         *   devicetree error: 'reg' is marked as required in 'properties:' */
+        reg = <0>;
 
-        /* WS2812B: one SPI frame = one WS2812 bit.
-         * 1-pulse (T1H≈0.7μs):  0x70 = 0111_0000
-         * 0-pulse (T0L≈0.35μs): 0x40 = 0100_0000
-         * (2 MHz SPI × 0.5 μs/bit ≈ WS2812 800 kHz) */
-        spi-one-frame = <0x70>;
-        spi-zero-frame = <0x40>;
+        /* ST-1209RGB timing (the LED on this bring-up board), per vendor
+         * datasheet - it is NOT WS2812B-speed-compatible:
+         *   T0H 0.295us  T1H 0.595us  bit period 0.89us (1124 kHz)
+         *   valid windows:  T0H 0.245-0.345  T1H 0.545-0.645
+         *   discriminator ~0.445us  (midpoint of the two high-time windows)
+         *   F_DIN max 1100 kHz -> the die can only run SLOWER than nominal
+         *   wire colour order: R,G,B MSB-first (NOT WS2812B's GRB)
+         *
+         * Zephyr's ws2812_spi serialises ONE WS2812 bit into ONE FULL SPI BYTE
+         * (ws2812_spi_ser(): buf[i] = bit ? one_frame : zero_frame, 8 bytes per
+         * channel), so a '1' pulse is N high SPI bits wide, a '0' is M high SPI
+         * bits. With the DISCRETE nRF clock (125k..32M, Zephyr FLOORS the
+         * request), only 8 MHz yields integer N,M that BOTH land inside the
+         * ST-1209RGB windows:
+         *
+         *   clock   T1H (bits)    T0H (bits)     bit period     verdict
+         *   8 MHz   0.625us (5)   0.250us (2)    1.00us/1000k  OK  both in window
+         *   4 MHz   0.75us (3)    0.25us (1)     2.00us/500k   T1H +0.105us out
+         *   2 MHz   1.50us (3)    0.50us (1)     4.00us/250k   T0H > 0.445 -> ALL 1
+         *
+         * At 2 MHz T0H=0.50us exceeds the ST-1209RGB discriminator (~0.445us),
+         * so every bit decodes as '1' -> strip shows solid white / no walk.
+         * At 8 MHz both highs sit inside their windows (T0H=0.250 is only 5ns
+         * above the 0.245 floor - the sole residual margin; verify on-board).
+         * 16/32 MHz would need >7 high bits for T1H - impossible in one byte.
+         *
+         * CRITICAL - nRF52840 SPIM is DISCRETE (125k/250k/500k/1M/2M/4M/8M/
+         * 16M/32M). Zephyr's get_nrf_spim_frequency() FLOORS the request. The
+         * old <3200000> was silently floored to 2 MHz. Always write an EXACT
+         * supported value (here 8000000). */
+        spi-max-frequency = <8000000>;
 
-        /* WS2812B */
-        chain-length = <15>; /* 15 LEDs: 5 per row × 3 rows */
-        color-mapping = <LED_COLOR_ID_GREEN
-                         LED_COLOR_ID_RED
+        /* 0x7C = 0111_1100 (5 high bits -> T1H 0.625us)
+         * 0x60 = 0110_0000 (2 high bits -> T0H 0.250us) */
+        spi-one-frame = <0x7C>;
+        spi-zero-frame = <0x60>;
+
+        /* Latch gap after each frame. The classic WS2812B needs > 50 us, but
+         * the newer WS2812B-V5 die needs >= 280 us before it latches, and this
+         * strip's exact variant is unknown. The board idles far longer than
+         * that between frames, so this is pure insurance. */
+        reset-delay = <300>;
+
+        /* WS2812B chain length. This is the FULL 15-pixel board, validated
+         * earlier on the 4-pixel bring-up board with the ST-1209RGB LED plus
+         * the MT3608 5V rail and 74AHCT1G125 level shifter. The timing above
+         * is the ST-1209RGB-compliant 8 MHz / RGB / 0x7C / 0x60 waveform,
+         * confirmed against the vendor datasheet (T0H 0.295us / T1H 0.595us /
+         * RGB MSB-first). Keep in step with LED_PIXEL_COUNT below. */
+        chain-length = <15>; /* 15 LEDs: full board, ST-1209RGB */
+        color-mapping = <LED_COLOR_ID_RED
+                         LED_COLOR_ID_GREEN
                          LED_COLOR_ID_BLUE>;
     };
 };

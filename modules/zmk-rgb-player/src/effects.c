@@ -12,6 +12,8 @@
  */
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zmk/event_manager.h>
+#include <zmk/events/position_state_changed.h>
 #include <zmk_rgbeffect/led_pixel.h>
 #include <zmk_rgbeffect/rgb_control.h>
 #include <zmk_rgbeffect/effects.h>
@@ -19,33 +21,125 @@
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
-static struct k_work_delayable effects_work;
+/* Render tick period, in ms.
+ *
+ * This used to be 10 ms, which is more than the job needs. One frame is
+ * 15 pixels x 24 bits x 1 SPI byte = 360 bytes - Zephyr's ws2812_spi driver
+ * serialises ONE WS2812 bit into ONE full SPI byte (see the spi-one-frame /
+ * spi-zero-frame comment in the shield overlay) - which at 3.2 MHz takes
+ * ~900 us, plus the 300 us latch gap the newer WS2812B dies need, so ~1.2 ms
+ * per frame. And it is SYNCHRONOUS: led_pixel_update() ->
+ * led_strip_update_rgb() -> spi_write() does not return until the DMA has
+ * drained.
+ *
+ * At a 10 ms tick that is 12% of the SYSTEM WORKQUEUE pushing pixels - and the
+ * system workqueue is the same queue ZMK scans the key matrix on, so every
+ * render delays input handling slightly. At 20 ms it is 6%, and the strip
+ * still renders at 50 fps, which is smooth for all seven effects.
+ *
+ * CORRECTION, for the record: an earlier revision of bringup.c claimed one
+ * frame was 2880 bytes / 7.2 ms. That was wrong by a factor of 8 - it counted
+ * the 8 SPI bits inside a frame byte as though each were its own byte. The
+ * real figure is 360 bytes / ~1.2 ms, so the strip was never the load it was
+ * believed to be and disabling it saved far less than assumed. (It is
+ * re-enabled in this revision, the hardware now having a working 5 V feed.)
+ *
+ * The animation constants below - the breathing divider, the rainbow hue step
+ * and RIPPLE_SPEED - are scaled so that each effect keeps the wall-clock speed
+ * it had at 10 ms. */
+#define EFFECTS_TICK_MS 20
+
+/* ---------------------------------------------------------------- */
+/* the render tick: a DEDICATED THREAD, not the system workqueue     */
+/* ---------------------------------------------------------------- */
+/* This used to be a k_work_delayable - i.e. it ran on the SYSTEM WORKQUEUE,
+ * and ZMK runs the key-matrix scan on that same workqueue. Every render is
+ * led_pixel_update(): ONE synchronous ~1.2 ms 360-byte SPI burst (see the
+ * EFFECTS_TICK_MS note above), so each frame sat directly in front of the
+ * matrix scan and delayed input by up to a frame. At 20 ms that is ~6% of the
+ * input path's own thread spent pushing pixels.
+ *
+ * Nobody could notice while the strip was dark, which is why it survived
+ * several revisions: the engine was inert under
+ * CONFIG_ZMK_RGB_PLAYER_BRINGUP, and LATFIX had the strip thread switched off.
+ * The moment the engine went live again (USBRGB) the load became real - which
+ * is exactly why "the lights work now" and "input got slower" arrived in the
+ * same report.
+ *
+ * A dedicated thread at a priority BELOW the workqueue makes the ordering
+ * permanent: the workqueue outranks it, so a scan that becomes ready preempts
+ * a render in progress. Input can never wait on pixels again. (The bring-up
+ * read-out used the same reasoning - see the note in bringup.c on why both of
+ * its threads were kept off the system workqueue.)
+ *
+ * Priority 12 sits below every radio path and below btdiag's 11:
+ *   ZMK's BLE notify thread = 5    (CONFIG_ZMK_BLE_THREAD_PRIORITY)
+ *   Zephyr's BT host RX     = 8    (CONFIG_BT_RX_PRIO)
+ *   btdiag blue-LED probe   = 11
+ *   this render thread      = 12   <- below all of them
+ *   Zephyr's idle thread    = 15
+ * A 50 fps animation is the least urgent thing on the board. */
+#define EFFECTS_THREAD_PRIORITY 12
+#define EFFECTS_STACK_SIZE      1536
+
+K_THREAD_STACK_DEFINE(effects_stack, EFFECTS_STACK_SIZE);
+static struct k_thread effects_thread;
+
 static rgb_effect_t active = RGB_EFFECT_OFF;
 static int8_t active_key = -1;         /* for SINGLE_KEY effect */
 static bool player_takeover = false;
 static uint32_t tick_count = 0;
-static bool tick_running;
+static volatile bool tick_running;
 
-static void effects_tick(struct k_work *work);
+static void effects_render_frame(void);
+
+static void effects_thread_fn(void *p1, void *p2, void *p3) {
+    ARG_UNUSED(p1);
+    ARG_UNUSED(p2);
+    ARG_UNUSED(p3);
+
+    while (tick_running) {
+        effects_render_frame();
+        k_sleep(K_MSEC(EFFECTS_TICK_MS));
+    }
+}
 
 static void start_tick(void) {
     if (tick_running) return;
-    k_work_init_delayable(&effects_work, effects_tick);
-    k_work_schedule(&effects_work, K_MSEC(10));
     tick_running = true;
+    k_thread_create(&effects_thread, effects_stack,
+                    K_THREAD_STACK_SIZEOF(effects_stack),
+                    effects_thread_fn, NULL, NULL, NULL,
+                    EFFECTS_THREAD_PRIORITY, 0, K_NO_WAIT);
+    k_thread_name_set(&effects_thread, "rgb_eff");
 }
 
 static void stop_tick(void) {
     if (!tick_running) return;
-    k_work_cancel_delayable(&effects_work);
     tick_running = false;
+    /* Join, so that when this returns the thread is gone and no render can be
+     * in flight. render_off() clears the strip immediately after calling this,
+     * and a tick that outlived it would repaint one stale frame. The thread
+     * notices the flag within EFFECTS_TICK_MS, so 500 ms is generous. */
+    (void)k_thread_join(&effects_thread, K_MSEC(500));
 }
 
 static struct led_rgb hsv_to_rgb(uint16_t h, uint8_t s, uint8_t v) {
     struct led_rgb c = {0, 0, 0};
     if (s == 0) { c.r = c.g = c.b = v; return c; }
     uint8_t region = h / 60;
-    uint8_t rem    = (h - region * 60) * 6;
+    /* Scale the in-region offset (0..59) into 0..255 so the (s * rem) >> 8
+     * products below stay inside the 8-bit range.
+     *
+     * BUG FIXED HERE: this was `* 6`. That factor belongs to the classic
+     * 8-bit-hue snippet, where h is 0..255 and region = h / 43 - there the
+     * remainder is 0..42 and * 6 lands in 0..252. Here h is 0..359 and
+     * region = h / 60, so the remainder is 0..59 and the correct factor is
+     * 255 / 60 = 4.25. With * 6 the product reached 354, and rem is a
+     * uint8_t, so everything >= 256 wrapped modulo 256. Hue therefore mapped
+     * to a scrambled, non-monotonic colour and the rainbow effect looked like
+     * random flickering - which is exactly what was reported. */
+    uint8_t rem = (uint8_t)(((h - region * 60) * 255) / 60);
     uint8_t p = (v * (255 - s)) >> 8;
     uint8_t q = (v * (255 - ((s * rem) >> 8))) >> 8;
     uint8_t t = (v * (255 - ((s * (255 - rem)) >> 8))) >> 8;
@@ -67,7 +161,10 @@ static void render_off(void) {
 }
 
 static uint8_t breathing_scale(void) {
-    uint32_t t = (tick_count / 16) % 100;
+    /* /8, not /16: EFFECTS_TICK_MS was doubled, so halving this divider keeps
+     * the breathing period at the same ~16 s wall-clock instead of stretching
+     * it to 32 s. */
+    uint32_t t = (tick_count / 8) % 100;
     uint32_t tri = (t < 50) ? (t * 2) : ((100 - t) * 2); /* 0..100 triangle */
     return (uint8_t)(20 + (tri * 80) / 100);             /* 20%..100% */
 }
@@ -93,7 +190,9 @@ static void render_breathing(void) {
 
 static void render_rainbow(void) {
     for (int i = 0; i < LED_PIXEL_COUNT; i++) {
-        uint16_t hue = (uint16_t)((tick_count * 3 + i * 24) % 360);
+        /* *6, not *3: the tick was doubled, so the hue step doubles too and a
+         * full 360-degree sweep still takes the same ~1.2 s. */
+        uint16_t hue = (uint16_t)((tick_count * 6 + i * 24) % 360);
         struct led_rgb c = hsv_to_rgb(hue, 255, rgb_control_get_brightness());
         led_pixel_set((uint8_t)i, c.r, c.g, c.b);
     }
@@ -142,7 +241,9 @@ static void render_twinkle(void) {
  *   width   = 5 keys (±2 around the head)
  *   max_dist = 14 (half the strip)
  */
-#define RIPPLE_SPEED   12
+/* 6, not 12: one key every 6 ticks instead of 12, so at a 20 ms tick the wave
+ * still advances one key per ~120 ms as it did at 10 ms. */
+#define RIPPLE_SPEED   6
 #define RIPPLE_WIDTH   5
 #define RIPPLE_MAX_D   14
 
@@ -186,7 +287,12 @@ static void render_ripple(void) {
     led_pixel_update();
 }
 
-static void effects_tick(struct k_work *work) {
+/* One rendered frame.
+ *
+ * Called ONLY from effects_thread_fn(). The self-rescheduling that used to
+ * live here is now the thread's own k_sleep() loop, which is the whole point
+ * of the change: the wait is no longer a system-workqueue work item. */
+static void effects_render_frame(void) {
     tick_count++;
     switch (active) {
         case RGB_EFFECT_SOLID:       render_solid();      break;
@@ -196,9 +302,6 @@ static void effects_tick(struct k_work *work) {
         case RGB_EFFECT_TWINKLE:     render_twinkle();    break;
         case RGB_EFFECT_RIPPLE:      render_ripple();     break;
         default: break;
-    }
-    if (tick_running) {
-        k_work_schedule(&effects_work, K_MSEC(10));
     }
 }
 
@@ -277,6 +380,82 @@ void effects_on_key_up(int8_t key_index) {
 void effects_set_active_key(int8_t key_index) {
     effects_on_key_down(key_index);
 }
+
+/* ------------------------------------------------------------------ */
+/* per-key light feedback, driven straight off the kscan event         */
+/* ------------------------------------------------------------------ */
+/* The keymap used to route every key through the hand-rolled &kp_we, which
+ * happened to call effects_on_key_down() on its way past. KPTEST moved the
+ * typing path onto ZMK's stock &kp - right for typing, but it also removed
+ * those calls and so silently broke the two effects that need to know WHICH key
+ * was pressed:
+ *
+ *   RGB_EFFECT_SINGLE_KEY   lights the key you are holding
+ *   RGB_EFFECT_RIPPLE       radiates the wave from the last key pressed
+ *
+ * Rather than re-attach them through the keymap - where one bad binding can
+ * take typing down with it - subscribe to ZMK's own position event. It fires
+ * for every key, BEFORE the keymap is consulted, so per-key light feedback now
+ * survives even a broken keymap. That is the same reasoning that made the
+ * bring-up marker kscan-driven.
+ *
+ * ev->position is the KEYMAP position (0..14): the matrix transform has already
+ * been applied, which is exactly the LED index this strip uses (one pixel per
+ * key, wired in keymap order).
+ *
+ * WHY THIS RECORDS STATE BUT DELIBERATELY DOES NOT RENDER - unlike every other
+ * caller of effects_on_key_*():
+ *
+ * This callback runs INSIDE THE INPUT PATH, i.e. the very call chain the
+ * keystroke itself is travelling down, and led_pixel_update() is a SYNCHRONOUS
+ * SPI burst (~1.2 ms for one 360-byte frame) taken under led_mutex. Rendering
+ * from here would add that stall - plus however long an in-flight tick render
+ * still holds the mutex - to EVERY key press. That is a real price to pay in
+ * the one revision whose entire purpose is input latency, and it buys a light
+ * that nobody can perceive as late. So this handler only records what changed;
+ * effects_render_frame() renders it within one 20 ms frame.
+ *
+ * effects_on_key_down()/up() themselves KEEP their immediate render - the song
+ * player (player.c) and the BLE note service (ble_service.c) both call them
+ * and both want the pixel lit at the instant they say so.
+ *
+ * On concurrency: the two fields written here (rgb_control's last_key and
+ * active_key) are plain, aligned int8_t stores, which the M4 cannot tear, and
+ * effects_render_frame() re-reads them from scratch every frame rather than
+ * accumulating. A store landing mid-tick therefore costs at most one frame of
+ * lag, never a corrupt value - so no lock is needed to protect them. Whether
+ * this runs on the system workqueue (kscan's scan is a k_work_delayable in
+ * ZMK's gpio-matrix driver) or on a kscan thread, the argument is the same. */
+static int effects_position_cb(const zmk_event_t *eh) {
+    const struct zmk_position_state_changed *ev = as_zmk_position_state_changed(eh);
+
+    if (ev == NULL) {
+        return ZMK_EV_EVENT_BUBBLE;
+    }
+
+#if defined(CONFIG_ZMK_RGB_PLAYER_BRINGUP)
+    /* Bring-up build: src/bringup.c owns the strip and does its own counting,
+     * so hand the press straight over - same as effects_on_key_down() would. */
+    bringup_key_event((int8_t)ev->position, ev->state);
+#else
+    rgb_control_set_last_key((int8_t)ev->position);
+
+    /* Mirror effects_on_key_up()'s guard: only the key that is actually
+     * lighting the strip may clear it, so releasing an earlier key while a
+     * later one is held does not blank the held key's pixel. */
+    if (active == RGB_EFFECT_SINGLE_KEY) {
+        if (ev->state) {
+            active_key = (int8_t)ev->position;
+        } else if (active_key == (int8_t)ev->position) {
+            active_key = -1;
+        }
+    }
+#endif
+    return ZMK_EV_EVENT_BUBBLE;
+}
+
+ZMK_LISTENER(effects_position, effects_position_cb);
+ZMK_SUBSCRIPTION(effects_position, zmk_position_state_changed);
 
 void effects_player_enter(void) {
     player_takeover = true;

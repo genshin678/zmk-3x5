@@ -15,6 +15,8 @@ typedef enum {
     RGB_EFFECT_COUNT        = 7
 } rgb_effect_t;
 
+/* Keep in step with chain-length (overlay) and led_pixel.h. Not derived from
+ * devicetree - change all three together (overlay / led_pixel.h / here). */
 #ifndef LED_PIXEL_COUNT
 #define LED_PIXEL_COUNT 15
 #endif

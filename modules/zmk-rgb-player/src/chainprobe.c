@@ -75,6 +75,14 @@
  *      hold during the window - but the window only covers the first 3.4 s. A
  *      phantom press arriving AFTER it, on a pin that never releases, latches
  *      key_down and ends the run 600 ms later.
+ *   3. v17 removed input entirely, and it WORKED: the split frame appeared,
+ *      with a clean boundary and two different colours on the two sides.
+ *      Outcome A - the chain is healthy, nothing to rewire. That same frame
+ *      also proved the bit encoding correct (values arrived at the requested
+ *      magnitude) and exposed the strip's real channel order as GRB rather than
+ *      the RGB the vendor datasheet states, because the half asked for red lit
+ *      green. Fixed in the overlay's color-mapping; this file was NOT touched
+ *      for it, and a channel swap must never be papered over in a renderer.
  *
  * So this revision takes no key input at all: no listener, no subscription, no
  * gesture, nothing on the input path can reach it. To leave the walk, power the

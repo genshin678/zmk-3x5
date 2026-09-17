@@ -30,14 +30,18 @@
  *
  * HOW TO READ THE BLUE LED (P0.15)
  *
- *   boot            : ONE LONG flash, 500 ms. This is the build signature.
- *                     It used to be a COUNT - eighteen quick blinks for
- *                     CHAINPROBE - and the count was abandoned on request:
- *                     eighteen 120 ms blinks cannot be counted reliably by eye,
- *                     and every revision moved the number anyway, so the
- *                     "fingerprint" was unreadable exactly when it was needed.
- *                     One long flash is countable at a glance and cannot be
- *                     confused with the 60 ms per-key read-out blinks below.
+ *   boot            : TWO LONG flashes, 500 ms each, 300 ms apart. This is the
+ *                     build signature. It used to be a COUNT - eighteen quick
+ *                     blinks for CHAINPROBE - and that count was abandoned on
+ *                     request: eighteen 120 ms blinks cannot be counted
+ *                     reliably by eye, and every revision moved the number
+ *                     anyway, so the "fingerprint" was unreadable exactly when
+ *                     it was needed. A SMALL count of LONG flashes is the
+ *                     compromise: two 500 ms flashes are unmistakable and still
+ *                     trivially countable, and neither can be confused with the
+ *                     60 ms per-key read-out blinks below.
+ *                     v15/v16 = 15/16 short blinks, v17 = ONE long flash,
+ *                     v18 = TWO (channel order R<->G fixed).
  *
  *   each key press  : 1..5 blinks encoding the WORST-CASE link latency, i.e.
  *                     interval x (latency + 1) - the longest a keystroke can
@@ -91,7 +95,8 @@
 #define BD_ON_MS        60
 #define BD_GAP_MS       60
 #define BD_SETTLE_MS   400
-#define BD_BOOT_FLASH_MS 500    /* ONE long flash - the build signature */
+#define BD_BOOT_FLASH_MS 500    /* boot signature: TWO flashes this long */
+#define BD_BOOT_GAP_MS   300    /* dark gap between the two signature flashes */
 #define BD_POST_BOOT_MS  600
 
 static const struct gpio_dt_spec bd_led = GPIO_DT_SPEC_GET(DT_NODELABEL(blue_led), gpios);
@@ -188,11 +193,15 @@ static void bd_thread_fn(void *p1, void *p2, void *p3) {
     ARG_UNUSED(p2);
     ARG_UNUSED(p3);
 
-    /* Boot signature: ONE long flash. The build fingerprint is the only thing
-     * this board can tell you with no serial console wired up, but a COUNT is
-     * not readable by eye - see the note at the top of this file. One 500 ms
-     * flash is obvious at a glance and the 60 ms per-key blinks below cannot
-     * be mistaken for it. */
+    /* Boot signature: TWO long flashes. The build fingerprint is the only thing
+     * this board can tell you with no serial console wired up, but a large
+     * COUNT is not readable by eye - see the note at the top of this file. Two
+     * 500 ms flashes are obvious at a glance and still countable, and the 60 ms
+     * per-key blinks below cannot be mistaken for them. */
+    bd_set(true);
+    k_sleep(K_MSEC(BD_BOOT_FLASH_MS));
+    bd_set(false);
+    k_sleep(K_MSEC(BD_BOOT_GAP_MS));
     bd_set(true);
     k_sleep(K_MSEC(BD_BOOT_FLASH_MS));
     bd_set(false);

@@ -194,12 +194,30 @@
         /* WS2812B chain length. This is the FULL 15-pixel board, validated
          * earlier on the 4-pixel bring-up board with the ST-1209RGB LED plus
          * the MT3608 5V rail and 74AHCT1G125 level shifter. The timing above
-         * is the ST-1209RGB-compliant 8 MHz / RGB / 0x7C / 0x60 waveform,
-         * confirmed against the vendor datasheet (T0H 0.295us / T1H 0.595us /
-         * RGB MSB-first). Keep in step with LED_PIXEL_COUNT below. */
+         * is the ST-1209RGB-compliant 8 MHz / 0x7C / 0x60 waveform, confirmed
+         * against the vendor datasheet (T0H 0.295us / T1H 0.595us) and now
+         * against the silicon: CHAINPROBE17 asked for solid RED and the strip
+         * answered GREEN, in the same frame where solid BLUE answered blue.
+         * A byte-exact magnitude surviving the round trip (200/255 arriving as
+         * a saturated channel, not white and not black) is the strongest proof
+         * that the 8 MHz bit encoding is right; the lone R<->G transposition is
+         * the only thing that was wrong.
+         * Keep in step with LED_PIXEL_COUNT below. */
         chain-length = <15>; /* 15 LEDs: full board, ST-1209RGB */
-        color-mapping = <LED_COLOR_ID_RED
-                         LED_COLOR_ID_GREEN
+
+        /* CHANNEL ORDER - MEASURED ON THIS PART, not taken on faith. The vendor
+         * datasheet states "RGB", but the LEDs fitted to this board answer G
+         * first: with the mapping set to R,G,B the driver puts the red byte on
+         * the wire first and the strip consumes it as its GREEN channel. So
+         * this strip is GRB - the same order as the WS2812B 5050 it replaced.
+         *
+         * This property IS the wire order, and this is the only place it
+         * belongs: the driver serialises the channels in exactly this sequence
+         * (1 = red, 2 = green, 3 = blue). Never "fix" a colour in software - a
+         * manual channel swap in led_pixel.c would desynchronise every other
+         * effect and skew the rainbow's hue ramp. */
+        color-mapping = <LED_COLOR_ID_GREEN
+                         LED_COLOR_ID_RED
                          LED_COLOR_ID_BLUE>;
     };
 };

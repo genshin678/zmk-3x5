@@ -6,66 +6,89 @@
  * A multimeter cannot tell you the topology of a WS2812 string. Continuity
  * beeps through ESD clamping diodes (DIN pad -> diode -> common VDD rail ->
  * another pad's diode -> its DIN), through a live supply, and through the
- * 0.5 mm-pitch pins of a TXS0102 that you cannot reliably probe one at a
+ * 0.5 mm-pitch pins of a level shifter you cannot reliably probe one at a
  * time. Two readings taken the same afternoon contradicted each other, which
  * is the signature of a bad instrument for the job - not of a bad board.
  *
  * This module answers the question with the strip itself, which is the only
  * observer that sees the data actually arriving.
  *
- * WHAT IT DOES
- * ------------
- * Lights ONE DATA INDEX at a time, in order, each in its own colour:
+ * WHAT IT DOES - two phases, then it repeats forever
+ * --------------------------------------------------
+ * PHASE 1 - THE SPLIT FRAME, held still for 4.0 s so you can look at it and
+ * photograph it:
  *
- *   index 0  - RED,    held 3.0 s   (long, so you cannot miss it)
+ *      pixels 0..7   RED
+ *      pixels 8..14  BLUE
+ *
+ * This single still frame is the whole topology answer, because topology is a
+ * SPATIAL question and this asks it spatially. Nothing needs to be timed or
+ * counted - if the frame is on screen, the answer is on screen:
+ *
+ *   A) HALF the strip red, the other half blue -> HEALTHY CHAIN. Each LED is
+ *      receiving its OWN slice of the bitstream. There is no wiring fault to
+ *      find. (Which half is red also reports the physical order: if the BLUE
+ *      half is the half the data enters from, the strip runs backwards
+ *      relative to the data index - harmless, just mirrored.)
+ *
+ *   B) ALL FIFTEEN LEDs red, and the blue half NEVER appears no matter how
+ *      long you watch -> PARALLEL / BUS. Every DIN is on one net, so every LED
+ *      receives the SAME first 24 bits and pixel 0 (red) is all any of them can
+ *      ever show. This is a LAYOUT/BOARD fault. The fix is to cut the common
+ *      net and wire DOUT(n) -> DIN(n+1) - NOT to add a jumper.
+ *
+ *   C) FEWER than fifteen LEDs lit -> the LIT COUNT is how many LEDs the data
+ *      actually reaches, and the position of the red/blue boundary is where
+ *      the chain breaks. Fly a wire from the last LED that responds to the
+ *      next one's DIN.
+ *
+ *   A photograph of this frame is the best evidence you can send: it shows how
+ *   many LEDs are lit, where the colour boundary falls, and whether the two
+ *   halves are distinguishable at all.
+ *
+ * PHASE 2 - THE WALK, one data index at a time, each in its own colour:
+ *
+ *   index 0  - RED,    held 3.0 s   (long, so you cannot miss the anchor)
  *   index 1  - orange, held 0.9 s
- *   index 2  - yellow, held 0.9 s
  *   ...        (a 15-step hue ramp; each data index gets its own colour)
  *   index 14 - pink,   held 0.9 s
- *   then 1.5 s all-off, and the 15-step cycle repeats
+ *   then 1.75 s with the whole strip dark, and the cycle repeats
  *
- * HOLD any key for 0.6 s to stop; the strip is then handed back to the normal
- * effect (CONFIG_ZMK_RGB_PLAYER_DEFAULT_EFFECT) so the board stays usable.
+ *   In a healthy chain exactly ONE physical LED is lit at a time and it walks
+ *   along the strip, so the lit position names the data index of that physical
+ *   LED. In a parallel strip every step lights all fifteen in that step's
+ *   colour instead.
  *
- * Two guards keep this inspection alive, because on this board it kept losing
- * a race it could not see:
+ * THERE IS NO WAY OUT BUT THE POWER SWITCH, ON PURPOSE
+ * ----------------------------------------------------
+ * Three earlier revisions handed the strip back to the rainbow effect on a key
+ * press. Three times the strip was showing rainbow before a single LED had
+ * walked:
  *
- *   1. A 3 s grace window after boot during which EVERY key event is dropped.
- *      A floating matrix input (or a gated rail still coming up) reports a
- *      keypress at boot; the earlier code acted on it while the probe was
- *      still inside its 400 ms settle sleep, so the probe exited before it
- *      lit a single LED and the only thing ever seen on the strip was the
- *      fallback rainbow effect.
- *   2. A deliberate HOLD of 0.6 s to stop, so neither a phantom event at
- *      boot nor a key you brush while probing can end the run.
+ *   1. v15 exited on ANY key event with no guard at all. The boot phantom
+ *      press - a floating matrix input, or a gated rail still coming up -
+ *      landed inside the thread's own 400 ms settle sleep, so the run flag was
+ *      already false when the loop was reached and the loop body never
+ *      executed once.
+ *   2. v16 added a 3 s grace window that DROPS every key event, expecting the
+ *      phantom press to become unable to satisfy a hold. It cannot START a
+ *      hold during the window - but the window only covers the first 3.4 s. A
+ *      phantom press arriving AFTER it, on a pin that never releases, latches
+ *      key_down and ends the run 600 ms later.
  *
- * HOW TO READ IT - three outcomes, three different faults
- * -------------------------------------------------------
- * A) At the RED step exactly ONE physical LED lights, and as the cycle
- *    advances the lit LED walks along the strip.
- *    -> Healthy daisy chain. The strip was never the problem; stop here.
+ * So this revision takes no key input at all: no listener, no subscription, no
+ * gesture, nothing on the input path can reach it. To leave the walk, power the
+ * board off; the probe restarts on the next boot, which is the point. Reflash
+ * hw-bringup to get normal operation back.
  *
- * B) At the RED step ALL FIFTEEN light up together (all red), and every later
- *    step also lights all fifteen in that step's colour.
- *    -> BUS topology, not a chain: every DIN is tied to the same net. Every
- *       LED receives identical data, so the firmware can never address them
- *       individually. This is a LAYOUT/BOARD fault. The fix is to cut the
- *       common net and wire DOUT(n) -> DIN(n+1) - NOT to add a jumper.
- *       (A TXS0102, which drives its high level through 10 kohm pull-ups,
- *       cannot drive 15 inputs' worth of capacitance, which is why a bus
- *       shows up as "only the closest LED decodes correctly".)
+ * The other half of that guarantee lives in effects.c: under CHAINPROBE the
+ * effects engine is inert and its render thread is NEVER CREATED, so this file
+ * is provably the only writer on the strip. If a smooth gradient rainbow ever
+ * appears while this build is flashed, the image running is not this build.
  *
- * C) At the RED step exactly ONE physical LED lights, and NOTHING lights at
- *    any later step.
- *    -> That one LED is the chain head and data does not reach the second
- *       LED. Break is between its DOUT and the next DIN. Fix: fly a wire
- *       from the last LED that DOES respond to the next one's DIN.
- *    -> Note which physical position the red one occupied: that is your
- *       data index 0, and it is where the chain starts counting from.
- *
- * Note on colours: values are capped at 200/255 so that outcome B (all LEDs
+ * Note on colours: values are capped at 200/255 so that outcome B (all fifteen
  * lit at once) stays well inside the supply budget: even all fifteen white is
- * ~225 mA on the ST-1209RGB (5 mA/channel class), within the MT3608 5V rail,
+ * ~225 mA on the ST-1209RGB (5 mA/channel class), within the MT3608 5 V rail,
  * versus hundreds of mA with WS2812B 5050.
  */
 
@@ -75,33 +98,39 @@
 
 #include <zmk_rgbeffect/led_pixel.h>
 #include <zmk_rgbeffect/effects.h>
-#include <zmk/event_manager.h>
-#include <zmk/events/position_state_changed.h>
 
 /* Render thread runs at 12; this inspector is equally unimportant. */
 #define CP_THREAD_PRIORITY  12
-#define CP_STACK_SIZE       1024
 
-#define CP_START_DELAY_MS   400     /* let the led_strip device settle   */
-#define CP_HEAD_HOLD_MS     3000    /* index 0: long, it is the key step */
+/* 1536, not 1024: this thread drives the same synchronous ~1.2 ms SPI burst
+ * that the render thread's 1536-byte stack was sized for. A stack fault here
+ * would reboot the board, and on a board with no console that is
+ * indistinguishable from "nothing happened" - a diagnostic must not be able to
+ * fail in a way that looks like silence. */
+#define CP_STACK_SIZE       1536
+
+#define CP_START_DELAY_MS   300     /* let the led_strip device settle    */
+
+/* Phase 1: the split frame. Colour B is deliberately the one that does NOT
+ * appear on a parallel strip, so "did the blue half ever show up?" is a
+ * question with a binary answer. */
+#define CP_SPLIT_AT         8       /* pixels 0..7 get colour A           */
+#define CP_SPLIT_A_R      200
+#define CP_SPLIT_A_G        0
+#define CP_SPLIT_A_B        0
+#define CP_SPLIT_B_R        0
+#define CP_SPLIT_B_G        0
+#define CP_SPLIT_B_B      200
+#define CP_SPLIT_HOLD_MS  4000
+
+/* Phase 2: the walk. */
+#define CP_HEAD_HOLD_MS     3000    /* index 0: long, it is the key step  */
 #define CP_STEP_HOLD_MS     900
 #define CP_GAP_MS           250
 #define CP_CYCLE_PAUSE_MS   1500
-#define CP_SLICE_MS         100     /* sleep granularity, so a hold is seen  */
-#define CP_EXIT_GRACE_MS    3000    /* drop ALL key events for this long     */
-#define CP_EXIT_HOLD_MS     600     /* a key must be HELD this long to stop  */
 
 K_THREAD_STACK_DEFINE(cp_stack, CP_STACK_SIZE);
 static struct k_thread cp_thread;
-static volatile bool cp_running;
-
-/* Exit-gesture state. Written on the input path, read by the render thread.
- * uint32_t and not int64_t: a 64-bit store is two 32-bit stores on Cortex-M4
- * and can tear, which would hand the reader a garbage timestamp and stop the
- * run instantly. Unsigned subtraction wraps cleanly, so this is safe. */
-static volatile bool     cp_armed;          /* false during the grace window */
-static volatile bool     cp_key_down;
-static volatile uint32_t cp_key_down_ts;
 
 /* One colour per data index, all components <= 200 (see file header). This
  * array is sized from LED_PIXEL_COUNT (=15), so it must hold exactly 15 rows.
@@ -130,33 +159,26 @@ static void cp_all_off(void) {
     led_pixel_update();
 }
 
+/* Phase 1: one static frame, two colours, a hard boundary at CP_SPLIT_AT.
+ * Nothing about this depends on timing, so it survives being looked at late,
+ * being photographed, or being described over a chat window. */
+static void cp_show_split(void) {
+    led_pixel_clear();
+    for (int i = 0; i < LED_PIXEL_COUNT; i++) {
+        if (i < CP_SPLIT_AT) {
+            led_pixel_set((uint8_t)i, CP_SPLIT_A_R, CP_SPLIT_A_G, CP_SPLIT_A_B);
+        } else {
+            led_pixel_set((uint8_t)i, CP_SPLIT_B_R, CP_SPLIT_B_G, CP_SPLIT_B_B);
+        }
+    }
+    led_pixel_update();
+}
+
+/* Phase 2: exactly one data index lit, everything else black. */
 static void cp_show_index(int idx) {
     led_pixel_clear();
     led_pixel_set((uint8_t)idx, cp_pal[idx][0], cp_pal[idx][1], cp_pal[idx][2]);
     led_pixel_update();
-}
-
-/* The exit gesture: a key held for CP_EXIT_HOLD_MS, honoured only after the
- * grace window has closed. Touches no peripheral. */
-static bool cp_exit_requested(void) {
-    if (!cp_armed || !cp_key_down) return false;
-    return ((uint32_t)k_uptime_get() - cp_key_down_ts) >= CP_EXIT_HOLD_MS;
-}
-
-/* Sleep in slices rather than one long block. A hold is then noticed within
- * CP_SLICE_MS instead of only after the whole step, while the step timings
- * stay exact because the slices still add up to `ms`. Returns false when the
- * run must stop. */
-static bool cp_hold_ms(uint32_t ms) {
-    while (ms > 0) {
-        uint32_t slice = (ms > CP_SLICE_MS) ? CP_SLICE_MS : ms;
-        k_sleep(K_MSEC(slice));
-        ms -= slice;
-        if (!cp_running || cp_exit_requested()) {
-            return false;
-        }
-    }
-    return true;
 }
 
 static void cp_thread_fn(void *p1, void *p2, void *p3) {
@@ -164,68 +186,27 @@ static void cp_thread_fn(void *p1, void *p2, void *p3) {
     ARG_UNUSED(p2);
     ARG_UNUSED(p3);
 
-    /* Settle the strip AND sit out the grace window. cp_armed stays false for
-     * this whole period, so cp_position_cb drops every key event and nothing
-     * can end the run before the first LED has lit. */
-    (void)cp_hold_ms(CP_START_DELAY_MS + CP_EXIT_GRACE_MS);
-    cp_armed = true;
+    /* Let the led_strip device settle, then take the strip over for good. */
+    k_sleep(K_MSEC(CP_START_DELAY_MS));
 
-    while (cp_running) {
-        bool keep_going = true;
+    /* Phase 1, ONCE: the still frame that answers the topology question. */
+    cp_show_split();
+    k_sleep(K_MSEC(CP_SPLIT_HOLD_MS));
 
-        for (int i = 0; i < LED_PIXEL_COUNT && keep_going; i++) {
+    /* Phase 2, forever: the walk. No exit condition exists - see the file
+     * header for why every one that was ever added got here. */
+    for (;;) {
+        for (int i = 0; i < LED_PIXEL_COUNT; i++) {
             cp_show_index(i);
-            keep_going = cp_hold_ms(i == 0 ? CP_HEAD_HOLD_MS : CP_STEP_HOLD_MS);
-            if (!keep_going) break;
+            k_sleep(K_MSEC(i == 0 ? CP_HEAD_HOLD_MS : CP_STEP_HOLD_MS));
             cp_all_off();
-            keep_going = cp_hold_ms(CP_GAP_MS);
+            k_sleep(K_MSEC(CP_GAP_MS));
         }
-
-        if (!keep_going) break;
-        if (!cp_hold_ms(CP_CYCLE_PAUSE_MS)) break;
+        k_sleep(K_MSEC(CP_CYCLE_PAUSE_MS));   /* all fifteen stay dark here */
     }
-
-    cp_armed = false;
-    cp_all_off();
-
-    /* Hand the strip back. Without this the board would stay dark after the
-     * first key press, which looks exactly like the fault being diagnosed. */
-    effects_set_active((rgb_effect_t)CONFIG_ZMK_RGB_PLAYER_DEFAULT_EFFECT);
 }
-
-/* Tracks the exit gesture. Runs on the input path, so it only records state -
- * no SPI, no logging, no blocking. */
-static int cp_position_cb(const zmk_event_t *eh) {
-    const struct zmk_position_state_changed *ev = as_zmk_position_state_changed(eh);
-
-    if (ev == NULL) {
-        return ZMK_EV_EVENT_BUBBLE;
-    }
-
-    /* During the grace window every event is dropped. That is the whole point:
-     * whatever the matrix reports at boot must not be able to end the run, and
-     * dropping it also means a key that reads as held from power-on never
-     * satisfies the hold gesture later. */
-    if (!cp_armed) {
-        return ZMK_EV_EVENT_BUBBLE;
-    }
-
-    if (ev->state) {
-        if (!cp_key_down) {
-            cp_key_down = true;
-            cp_key_down_ts = (uint32_t)k_uptime_get();
-        }
-    } else {
-        cp_key_down = false;
-    }
-    return ZMK_EV_EVENT_BUBBLE;
-}
-
-ZMK_LISTENER(chainprobe, cp_position_cb);
-ZMK_SUBSCRIPTION(chainprobe, zmk_position_state_changed);
 
 void chainprobe_init(void) {
-    cp_running = true;
     k_thread_create(&cp_thread, cp_stack,
                     K_THREAD_STACK_SIZEOF(cp_stack),
                     cp_thread_fn, NULL, NULL, NULL,

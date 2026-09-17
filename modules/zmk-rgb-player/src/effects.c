@@ -318,10 +318,20 @@ void effects_tick_stop(void) {
 }
 
 void effects_set_active(rgb_effect_t e) {
-#if defined(CONFIG_ZMK_RGB_PLAYER_BRINGUP)
+#if defined(CONFIG_ZMK_RGB_PLAYER_BRINGUP) || defined(CONFIG_ZMK_RGB_PLAYER_CHAINPROBE)
     /* Bring-up build: src/bringup.c owns the strip so that every LED you
      * observe has exactly one meaning. Effect switching is intentionally inert
-     * until CONFIG_ZMK_RGB_PLAYER_BRINGUP is turned back off. */
+     * until CONFIG_ZMK_RGB_PLAYER_BRINGUP is turned back off.
+     *
+     * Chain-inspector build: src/chainprobe.c owns the strip for exactly the
+     * same reason, and this gate is what makes its diagnosis airtight. Starting
+     * the render tick from here would put a SECOND writer on the strip and -
+     * worse - make a smooth rainbow possible again, which is the one state that
+     * has three times been mistaken for "the probe never ran".
+     *
+     * With this gate the effects thread is never even created under CHAINPROBE,
+     * so the probe is provably the only writer. A gradient rainbow can then
+     * only mean the wrong image is flashed, and that is a useful answer. */
     ARG_UNUSED(e);
     return;
 #endif

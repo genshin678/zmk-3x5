@@ -30,11 +30,14 @@
  *
  * HOW TO READ THE BLUE LED (P0.15)
  *
- *   boot            : THIRTEEN quick blinks. This is the build signature and
- *                     the only reliable way to tell which build is flashed -
- *                     HSVFIX THIRTEEN, COMBOFIX2 TWELVE, BRIWRAP ELEVEN,
- *                     COMBOFIX TEN, USBRGB NINE, PAIRFIX EIGHT, LATFIX SEVEN,
- *                     KPTEST SIX, LAYERS / HIDCHK FIVE.
+ *   boot            : ONE LONG flash, 500 ms. This is the build signature.
+ *                     It used to be a COUNT - eighteen quick blinks for
+ *                     CHAINPROBE - and the count was abandoned on request:
+ *                     eighteen 120 ms blinks cannot be counted reliably by eye,
+ *                     and every revision moved the number anyway, so the
+ *                     "fingerprint" was unreadable exactly when it was needed.
+ *                     One long flash is countable at a glance and cannot be
+ *                     confused with the 60 ms per-key read-out blinks below.
  *
  *   each key press  : 1..5 blinks encoding the WORST-CASE link latency, i.e.
  *                     interval x (latency + 1) - the longest a keystroke can
@@ -88,8 +91,8 @@
 #define BD_ON_MS        60
 #define BD_GAP_MS       60
 #define BD_SETTLE_MS   400
-#define BD_BOOT_BLINKS  18
-#define BD_POST_BOOT_MS 600
+#define BD_BOOT_FLASH_MS 500    /* ONE long flash - the build signature */
+#define BD_POST_BOOT_MS  600
 
 static const struct gpio_dt_spec bd_led = GPIO_DT_SPEC_GET(DT_NODELABEL(blue_led), gpios);
 static bool bd_led_ok;
@@ -185,14 +188,13 @@ static void bd_thread_fn(void *p1, void *p2, void *p3) {
     ARG_UNUSED(p2);
     ARG_UNUSED(p3);
 
-    /* Boot signature: the count is the only build fingerprint available on a
-     * board with no serial console wired up. */
-    for (uint8_t i = 0; i < BD_BOOT_BLINKS; i++) {
-        bd_set(true);
-        k_sleep(K_MSEC(BD_ON_MS));
-        bd_set(false);
-        k_sleep(K_MSEC(BD_GAP_MS));
-    }
+    /* Boot signature: ONE long flash. The build fingerprint is the only thing
+     * this board can tell you with no serial console wired up, but a COUNT is
+     * not readable by eye - see the note at the top of this file. One 500 ms
+     * flash is obvious at a glance and the 60 ms per-key blinks below cannot
+     * be mistaken for it. */
+    bd_set(true);
+    k_sleep(K_MSEC(BD_BOOT_FLASH_MS));
     bd_set(false);
     k_sleep(K_MSEC(BD_POST_BOOT_MS));
 

@@ -19,12 +19,22 @@
 #include <stdint.h>
 
 /* Custom 128-bit service UUID: 9e3c1b0a-7a4b-4f0e-8d1d-7a6f5c3b2a10
- * Bytes are in textual-UUID (big-endian) order — NOT reversed.
- * (An earlier build accidentally used the byte-reversed form
- *  102a3b5c-6f7a-1d8d-0e4f-4b7a0a1b3c9e; the PWA tolerates both.) */
+ *
+ * Byte order matters and it is NOT the textual order.
+ *
+ * `BT_UUID_DECLARE_128()` takes the *on-air* byte array, and Bluetooth transmits
+ * 128-bit UUIDs least-significant-byte first. Writing the bytes out in textual
+ * order (`0x9e,0x3c,0x1b,0x0a,...`) therefore puts them on the wire reversed and
+ * every peer decodes the service as
+ * `102a3b5c-6f7a-1d8d-0e4f-4b7a0a1b3c9e` instead of the intended value - which
+ * is what this file did for a long time, while a comment here blamed "an earlier
+ * build" for a reversal the declaration itself caused.
+ *
+ * `BT_UUID_128_ENCODE()` emits the little-endian form for us; always use it.
+ * (The Android app matches by prefix and accepts either encoding, so a board
+ * still running the old form connects too.) */
 #define ZMK_PLAYER_SERVICE_UUID BT_UUID_DECLARE_128( \
-    0x9e, 0x3c, 0x1b, 0x0a, 0x7a, 0x4b, 0x4f, 0x0e, \
-    0x8d, 0x1d, 0x7a, 0x6f, 0x5c, 0x3b, 0x2a, 0x10)
+    BT_UUID_128_ENCODE(0x9e3c1b0a, 0x7a4b, 0x4f0e, 0x8d1d, 0x7a6f5c3b2a10))
 
 /* 16-bit characteristic UUIDs (unique per characteristic). */
 #define ZMK_PLAYER_CHRC_SCORE      BT_UUID_DECLARE_16(0xBE01)  /* WRITE  */

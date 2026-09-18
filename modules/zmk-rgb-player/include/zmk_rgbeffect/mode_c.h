@@ -4,8 +4,11 @@
  * The phone App pushes the score step-by-step, then sends START. The keyboard
  * shows the current step's key in BLUE and the next step's key in RED.
  * The user presses the physical key; on the correct key we flash GREEN and
- * advance; on a wrong key we flash ALL RED and report MISS; on timeout we
- * flash the current key RED and report TIMEOUT, then skip to the next step.
+ * advance; on a wrong key we flash ALL RED and report MISS; with no press at all
+ * we pulse the expected key AMBER as a reminder and keep waiting.
+ *
+ * The step NEVER advances on its own - strictly user-paced. The only transition
+ * out of a step is the correct key press.
  *
  * BLE control commands (see ble_service.h):
  *   0x30 MODE_C_START  + u16 note_count
@@ -16,7 +19,8 @@
  * Events reported back to the App via the EVENTS characteristic (BE05):
  *   0x01 HIT     (key = correct key pressed)
  *   0x02 MISS    (key = wrong key pressed)
- *   0x03 TIMEOUT (key = 0)
+ *   0x03 TIMEOUT (key = 0) - no longer emitted; retained for wire
+ *        compatibility (it used to mean "skip this step")
  *   0x04 DONE    (key = 0, all steps complete)
  */
 #pragma once
@@ -39,7 +43,7 @@
 /* Event opcodes sent on the BLE EVENTS characteristic. */
 #define MODE_C_EVT_HIT     0x01
 #define MODE_C_EVT_MISS    0x02
-#define MODE_C_EVT_TIMEOUT 0x03
+#define MODE_C_EVT_TIMEOUT 0x03   /* in the protocol, but not emitted: see above */
 #define MODE_C_EVT_DONE    0x04
 
 int  mode_c_init(void);

@@ -5,16 +5,23 @@
  * (effects_player_enter) and renders:
  *   - current step key  -> BLUE
  *   - next   step key   -> RED
- * On a correct press: GREEN flash -> advance.
- * On a wrong press:   ALL RED flash -> MISS event, keep waiting on this step.
- * On timeout:         current key RED flash -> TIMEOUT event, skip to next.
+ * STRICTLY USER-PACED: the cursor never moves on its own - only the correct
+ * physical press advances it.
+ * On a correct press: GREEN flash -> wait `delta` ms -> next step arms.
+ * On a wrong press:   ALL RED flash -> MISS event, stay on this step.
+ * On no press:        AMBER pulse on the expected key -> stay on this step.
+ *                     (There is no timeout-skip any more.)
+ *
+ * Why that changed: the previous build auto-advanced every 300 ms. `duration` is
+ * a uint8 that mc_arm_step() floored to 300, so an untouched keyboard played the
+ * whole score by itself - the run was never actually step-by-step.
  *
  * Physical key presses are captured from the ZMK position_state_changed event
  * so ALL 15 keys are detected, including the four corners that are bound to
  * &none in the keymap (they still generate a position event).
  *
- * Timing is driven by the user + a per-step timeout measured on the keyboard's
- * own clock; MODE_C_TICK only refreshes an informational reference time.
+ * Timing is driven entirely by the user; MODE_C_TICK only refreshes an
+ * informational reference time.
  */
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -31,7 +38,7 @@ typedef enum { MC_IDLE, MC_RUNNING, MC_ADVANCING } mc_state_t;
 
 typedef struct __attribute__((packed)) {
     uint8_t  key;       /* 1..15 */
-    uint8_t  duration;  /* ms, per-step timeout */
+    uint8_t  duration;  /* ms, reminder interval upper bound (no timeout-skip) */
     uint16_t delta;     /* ms, gap after a HIT before the next step arms */
 } mc_step_t;
 
@@ -46,11 +53,25 @@ static struct k_work_delayable advance_work;
 static struct k_work_delayable restore_work;
 
 static void mc_advance(void);
+static void mc_arm_reminder(void);
 
 /* Cue colors (GRB order not needed; led_rgb is r,g,b). */
 static const struct led_rgb CUE_BLUE  = { .r = 0,   .g = 40,  .b = 255 };
 static const struct led_rgb CUE_RED   = { .r = 255, .g = 0,   .b = 0   };
 static const struct led_rgb CUE_GREEN = { .r = 0,   .g = 255, .b = 0   };
+/* Reminder pulse. The expected key is already lit BLUE, so the "still waiting on
+ * you" nudge has to be a different colour to register as a nudge at all. */
+static const struct led_rgb CUE_AMBER = { .r = 255, .g = 110, .b = 0   };
+
+/* How long a step waits before pulsing that reminder, in ms.
+ *
+ * This used to be `steps[].duration`, the per-step timeout - but that field is a
+ * uint8 (so <= 255) and mc_arm_step() floored it at 300, meaning every step
+ * elapsed after 300 ms and the guide advanced by itself. The wire field is kept
+ * for compatibility and used here only as an upper bound; the floor is what
+ * actually governs, and nothing in this file advances on it any more. */
+#define MODE_C_REMIND_MIN_MS 1200u
+#define MODE_C_REMIND_MAX_MS 8000u
 
 /* ---- rendering ---- */
 
@@ -93,11 +114,12 @@ static void flash_all(const struct led_rgb c, int ms) {
 static void timeout_work_fn(struct k_work *work) {
     ARG_UNUSED(work);
     if (state != MC_RUNNING) return;
+    /* Reminder only. This handler used to flash the key RED, report TIMEOUT and
+     * skip to the next step - which is exactly the "the score plays itself"
+     * behaviour we are removing. A step now waits for the user indefinitely. */
     int cur = (int)steps[cur_step].key - 1;
-    flash_one(cur, CUE_RED, 140);
-    mode_c_notify_event(MODE_C_EVT_TIMEOUT, 0, cur_step);
-    state = MC_ADVANCING;
-    k_work_schedule(&advance_work, K_MSEC(140));
+    flash_one(cur, CUE_AMBER, 180);
+    mc_arm_reminder();
 }
 
 static void advance_work_fn(struct k_work *work) {
@@ -116,13 +138,19 @@ static void restore_work_fn(struct k_work *work) {
 
 /* ---- state machine ---- */
 
+/* Arm the "you are still on this step" pulse. Advances nothing: the only way
+ * out of a step is mode_c_on_position() seeing the correct key. */
+static void mc_arm_reminder(void) {
+    uint32_t to = steps[cur_step].duration;
+    if (to < MODE_C_REMIND_MIN_MS) to = MODE_C_REMIND_MIN_MS;
+    if (to > MODE_C_REMIND_MAX_MS) to = MODE_C_REMIND_MAX_MS;
+    k_work_schedule(&timeout_work, K_MSEC(to));
+}
+
 static void mc_arm_step(void) {
     state = MC_RUNNING;
     render_blue_red();
-    uint32_t to = steps[cur_step].duration;
-    if (to < 300)  to = 300;     /* sane minimum so a tap registers */
-    if (to > 8000) to = 8000;
-    k_work_schedule(&timeout_work, K_MSEC(to));
+    mc_arm_reminder();
 }
 
 static void mc_advance(void) {
@@ -166,10 +194,8 @@ void mode_c_on_position(uint32_t position, bool pressed) {
         /* MISS: flash all red, report, keep waiting on this step. */
         flash_all(CUE_RED, 220);
         mode_c_notify_event(MODE_C_EVT_MISS, pressed_key, cur_step);
-        uint32_t to = steps[cur_step].duration;
-        if (to < 300) to = 300;
         k_work_cancel_delayable(&timeout_work);
-        k_work_schedule(&timeout_work, K_MSEC(to));
+        mc_arm_reminder();
     }
 }
 

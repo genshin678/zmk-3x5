@@ -24,7 +24,7 @@ LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 static uint8_t   staging[SCORE_STAGING_BYTES];
 static uint16_t  staging_len = 0;
 
-static uint8_t   status_buf[8];
+static uint8_t   status_buf[9];   /* bytes 0..7 status; byte 8 = fw_flags */
 static bool      status_notify_enabled;
 
 static uint8_t   events_buf[4];
@@ -62,6 +62,9 @@ static void status_rebuild(void) {
     memcpy(&status_buf[2], &pos, 4);
     uint16_t step = mode_c_is_active() ? mode_c_current_step() : 0;
     memcpy(&status_buf[6], &step, 2);
+    /* Capability flags so the App can negotiate features without a version query.
+     * bit0: wide delta (delta not clamped to 1s on a HIT). */
+    status_buf[8] = (uint8_t)ZMK_RGB_PLAYER_FW_FLAGS;
 }
 
 static void status_notify(void) {

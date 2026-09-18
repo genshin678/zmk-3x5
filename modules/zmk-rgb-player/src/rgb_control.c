@@ -11,7 +11,22 @@
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
-static uint8_t   brightness   = 128;
+/* Hard ceiling on the global brightness.
+ *
+ * 15 WS2812B draw up to 60 mA each at full white, i.e. ~900 mA for the strip
+ * alone; at the old default of 128/255 some effects still pulled ~450 mA. That
+ * is a lot to ask of a board whose LEDs were only just reworked onto their own
+ * 5 V feed, and it is a live suspect for any input misbehaviour that appears
+ * only while the strip is lit (a sagging rail browns out the MCU; the boot
+ * signature would replay).
+ *
+ * 96/255 (~38%) is still clearly visible for every effect and keeps the strip
+ * worst case near ~340 mA. The clamp lives in rgb_control_set_brightness() so
+ * EVERY path is bounded - the boot default, the Y+P brightness loop, and the
+ * BLE service - rather than relying on each caller to behave. */
+#define RGB_MAX_BRIGHTNESS 96
+
+static uint8_t   brightness   = RGB_MAX_BRIGHTNESS;
 static uint16_t  hue         = 200;
 static int8_t    last_key    = -1;
 
@@ -24,10 +39,29 @@ static struct k_work_delayable bri_loop_work;
 static int8_t      hue_loop_dir = 0;   /* +1 or -1 */
 static struct k_work_delayable hue_loop_work;
 
+/* One step of the Y+P brightness loop.
+ *
+ * This WRAPS rather than parking at the ceiling: going past
+ * RGB_MAX_BRIGHTNESS lands on 0 and climbing resumes, and going below 0 lands
+ * back on the ceiling. That is the point - RGB_MAX_BRIGHTNESS is a power /
+ * current ceiling, not a place for the loop to stop. It also fixes the dead
+ * combo: the boot default used to sit AT that ceiling while the only direction
+ * was +1, so every step ran straight into the clamp and nothing ever changed.
+ *
+ * This is deliberately NOT rgb_control_change_brightness(): that one clamps,
+ * which is the right semantic for a plain "nudge the value" API. The wrap
+ * belongs to the *loop* alone, and BOTH loop entry points go through here so
+ * they cannot drift apart. */
+static void bri_step(int delta) {
+    int v = (int)brightness + delta;
+    if (v > RGB_MAX_BRIGHTNESS) v = 0;
+    if (v < 0)                  v = RGB_MAX_BRIGHTNESS;
+    brightness = (uint8_t)v;
+}
+
 static void bri_loop_tick(struct k_work *work) {
     if (bri_loop == BRI_IDLE) return;
-    int delta = (bri_loop == BRI_UP) ? +1 : -1;
-    rgb_control_change_brightness(delta);
+    bri_step((bri_loop == BRI_UP) ? +1 : -1);
     k_work_schedule(&bri_loop_work, K_MSEC(100));
 }
 
@@ -44,12 +78,16 @@ int rgb_control_init(void) {
 }
 
 void rgb_control_set_brightness(uint8_t v) {
+    /* Single clamp point for the whole module - see RGB_MAX_BRIGHTNESS. */
+    if (v > RGB_MAX_BRIGHTNESS) {
+        v = RGB_MAX_BRIGHTNESS;
+    }
     brightness = v;
 }
 void rgb_control_change_brightness(int delta) {
     int v = (int)brightness + delta;
-    if (v < 0)   v = 0;
-    if (v > 255) v = 255;
+    if (v < 0)                   v = 0;
+    if (v > RGB_MAX_BRIGHTNESS)  v = RGB_MAX_BRIGHTNESS;
     rgb_control_set_brightness((uint8_t)v);
 }
 uint8_t rgb_control_get_brightness(void) { return brightness; }
@@ -83,7 +121,7 @@ void rgb_control_bri_loop_start(bri_loop_t dir) {
     bri_loop = dir;
     bri_loop_dir = (dir == BRI_UP) ? +1 : -1;
     k_work_cancel_delayable(&bri_loop_work);
-    rgb_control_change_brightness(bri_loop_dir);
+    bri_step(bri_loop_dir);
     k_work_schedule(&bri_loop_work, K_MSEC(100));
 }
 void rgb_control_bri_loop_stop(void) {

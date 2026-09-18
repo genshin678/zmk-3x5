@@ -30,4 +30,20 @@ config ZMK_RGB_PLAYER_BRINGUP
       While enabled, effect switching is inert and the strip has exactly one
       writer (src/bringup.c). Turn this off once the hardware is verified.
 
+config ZMK_RGB_PLAYER_DEFAULT_EFFECT
+    int "RGB effect active at boot"
+    default 0
+    range 0 6
+    help
+      Which effect the strip shows after boot. 0=OFF, 1=solid single colour,
+      2=breathing, 3=rainbow, 4=single-key, 5=twinkle, 6=ripple.
+
+      Defaults to 0 (OFF): this board runs on a battery and the strip is the
+      largest optional current draw in the firmware - a 15-pixel animated
+      effect is roughly 85-100 mA, while OFF starts no render tick at all.
+      The Y+N combo cycles all seven at runtime, so this setting only decides
+      what you see before you ever press it. Set 3 (rainbow) when you want
+      visual proof at boot that the strip is alive; that is what the bring-up
+      builds used, and it is deliberately not the shipping default.
+
 endif # ZMK_RGBEFFECT

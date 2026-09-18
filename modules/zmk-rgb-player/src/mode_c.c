@@ -157,7 +157,10 @@ void mode_c_on_position(uint32_t position, bool pressed) {
         state = MC_ADVANCING;
         uint32_t gap = steps[cur_step].delta;
         if (gap < 80) gap = 140;     /* minimum so the green flash reads */
-        if (gap > 1000) gap = 1000;  /* cap so we never hang mid-advance */
+        if (gap > MODE_C_DELTA_MAX_MS) gap = MODE_C_DELTA_MAX_MS;
+                                 /* was hard-coded to 1000; raised so long
+                                    rests keep their tempo (negotiated via
+                                    BE04 status byte 8, bit0) */
         k_work_schedule(&advance_work, K_MSEC(gap));
     } else {
         /* MISS: flash all red, report, keep waiting on this step. */

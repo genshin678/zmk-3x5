@@ -148,30 +148,42 @@
          *   devicetree error: 'reg' is marked as required in 'properties:' */
         reg = <0>;
 
-        /* Zephyr's ws2812_spi driver serialises ONE WS2812 bit into ONE FULL
-         * SPI BYTE (ws2812_spi_ser(): buf[i] = bit ? one_frame : zero_frame,
-         * 8 bytes per colour channel), so a pulse is 3 or 1 SPI bits wide:
+        /* ST-1209RGB timing (the LED on this bring-up board), per vendor
+         * datasheet - it is NOT WS2812B-speed-compatible:
+         *   T0H 0.295us  T1H 0.595us  bit period 0.89us (1124 kHz)
+         *   valid windows:  T0H 0.245-0.345  T1H 0.545-0.645
+         *   discriminator ~0.445us  (midpoint of the two high-time windows)
+         *   F_DIN max 1100 kHz -> the die can only run SLOWER than nominal
+         *   wire colour order: R,G,B MSB-first (NOT WS2812B's GRB)
          *
-         *   clock    T1H = 3 bits    T0H = 1 bit       WS bit = 8 bits
-         *   4.0 MHz  0.75 us (ok)    0.25 us (at the  2.00 us
-         *                            datasheet MIN)
-         *   3.2 MHz  0.94 us (ok)    0.31 us (ok)     2.50 us   <- used here
-         *   WS2812B  0.65-0.95 us    0.25-0.55 us     >= 0.65 us
+         * Zephyr's ws2812_spi serialises ONE WS2812 bit into ONE FULL SPI BYTE
+         * (ws2812_spi_ser(): buf[i] = bit ? one_frame : zero_frame, 8 bytes per
+         * channel), so a '1' pulse is N high SPI bits wide, a '0' is M high SPI
+         * bits. With the DISCRETE nRF clock (125k..32M, Zephyr FLOORS the
+         * request), only 8 MHz yields integer N,M that BOTH land inside the
+         * ST-1209RGB windows:
          *
-         * 1-pulse: 0x70 = 0111_0000    0-pulse: 0x40 = 0100_0000
+         *   clock   T1H (bits)    T0H (bits)     bit period     verdict
+         *   8 MHz   0.625us (5)   0.250us (2)    1.00us/1000k  OK  both in window
+         *   4 MHz   0.75us (3)    0.25us (1)     2.00us/500k   T1H +0.105us out
+         *   2 MHz   1.50us (3)    0.50us (1)     4.00us/250k   T0H > 0.445 -> ALL 1
          *
-         * WHY NOT 4 MHz: the data runs through U1 (TXS0102), whose high level
-         * is only pulled up by a ~10k internal resistor (plus a one-shot edge
-         * accelerator). Crossing the LED's input threshold costs ~100-150 ns
-         * on that line, which at 4 MHz eats the margin of a "1" bit
-         * (0.75 us -> effectively ~0.60-0.65 us, i.e. outside the 0.65 us
-         * minimum) and can flip a "1" to a "0". At 3.2 MHz the same "1" still
-         * measures ~0.80 us at the LED pin. If U1 is ever bypassed (P1.04 ->
-         * DIN through 33-100R), 4 MHz becomes safe again. */
-        spi-max-frequency = <3200000>;
+         * At 2 MHz T0H=0.50us exceeds the ST-1209RGB discriminator (~0.445us),
+         * so every bit decodes as '1' -> strip shows solid white / no walk.
+         * At 8 MHz both highs sit inside their windows (T0H=0.250 is only 5ns
+         * above the 0.245 floor - the sole residual margin; verify on-board).
+         * 16/32 MHz would need >7 high bits for T1H - impossible in one byte.
+         *
+         * CRITICAL - nRF52840 SPIM is DISCRETE (125k/250k/500k/1M/2M/4M/8M/
+         * 16M/32M). Zephyr's get_nrf_spim_frequency() FLOORS the request. The
+         * old <3200000> was silently floored to 2 MHz. Always write an EXACT
+         * supported value (here 8000000). */
+        spi-max-frequency = <8000000>;
 
-        spi-one-frame = <0x70>;
-        spi-zero-frame = <0x40>;
+        /* 0x7C = 0111_1100 (5 high bits -> T1H 0.625us)
+         * 0x60 = 0110_0000 (2 high bits -> T0H 0.250us) */
+        spi-one-frame = <0x7C>;
+        spi-zero-frame = <0x60>;
 
         /* Latch gap after each frame. The classic WS2812B needs > 50 us, but
          * the newer WS2812B-V5 die needs >= 280 us before it latches, and this
@@ -179,8 +191,32 @@
          * that between frames, so this is pure insurance. */
         reset-delay = <300>;
 
-        /* WS2812B */
-        chain-length = <15>; /* 15 LEDs: 5 per row × 3 rows */
+        /* WS2812B chain length. This is the FULL 15-pixel board, validated
+         * earlier on the 4-pixel bring-up board with the ST-1209RGB LED plus
+         * the MT3608 5V rail and 74AHCT1G125 level shifter. The timing above
+         * is the ST-1209RGB-compliant 8 MHz / 0x7C / 0x60 waveform, confirmed
+         * against the vendor datasheet (T0H 0.295us / T1H 0.595us) and now
+         * against the silicon: the split-frame test asked for solid RED and
+         * the strip answered GREEN, in the same frame where solid BLUE
+         * answered blue.
+         * A byte-exact magnitude surviving the round trip (200/255 arriving as
+         * a saturated channel, not white and not black) is the strongest proof
+         * that the 8 MHz bit encoding is right; the lone R<->G transposition is
+         * the only thing that was wrong.
+         * Keep in step with LED_PIXEL_COUNT below. */
+        chain-length = <15>; /* 15 LEDs: full board, ST-1209RGB */
+
+        /* CHANNEL ORDER - MEASURED ON THIS PART, not taken on faith. The vendor
+         * datasheet states "RGB", but the LEDs fitted to this board answer G
+         * first: with the mapping set to R,G,B the driver puts the red byte on
+         * the wire first and the strip consumes it as its GREEN channel. So
+         * this strip is GRB - the same order as the WS2812B 5050 it replaced.
+         *
+         * This property IS the wire order, and this is the only place it
+         * belongs: the driver serialises the channels in exactly this sequence
+         * (1 = red, 2 = green, 3 = blue). Never "fix" a colour in software - a
+         * manual channel swap in led_pixel.c would desynchronise every other
+         * effect and skew the rainbow's hue ramp. */
         color-mapping = <LED_COLOR_ID_GREEN
                          LED_COLOR_ID_RED
                          LED_COLOR_ID_BLUE>;

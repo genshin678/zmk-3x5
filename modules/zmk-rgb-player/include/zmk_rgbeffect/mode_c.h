@@ -25,6 +25,17 @@
 
 #define MODE_C_MAX_STEPS 2048
 
+/* Maximum `delta` (ms) the firmware honours on a HIT before advancing to the
+ * next step. Historically hard-coded to 1000 in mode_c_on_position, which made
+ * any rest longer than 1s snap to 1s and ruined the tempo of slow passages.
+ * The App negotiates this via BE04 status byte 8 (bit0 = wide delta); raising
+ * the cap lets long rests keep their original length. `steps[].delta` is a
+ * uint16_t, so 65000 stays well inside the 0..65535 wire range. */
+#define MODE_C_DELTA_MAX_MS 65000
+
+/* Capability flags reported in BE04 status byte 8 (see ble_service.c). */
+#define ZMK_RGB_PLAYER_FW_FLAGS 0x01u   /* bit0: wide delta (>1s rests preserved) */
+
 /* Event opcodes sent on the BLE EVENTS characteristic. */
 #define MODE_C_EVT_HIT     0x01
 #define MODE_C_EVT_MISS    0x02

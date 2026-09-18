@@ -16,15 +16,18 @@ Provides:
 - Score playback engine: load via USB CDC or BLE GATT, auto-press + light
   keys in mode B (mode A = light only)
 - **Mode C (Assisted Play-Along / 引导弹奏):** phone App pushes the score
-  step-by-step; the keyboard lights the current key BLUE and the next key RED;
-  correct press flashes GREEN and advances, wrong press flashes ALL RED
-  (MISS), timeout flashes the current key RED and skips (TIMEOUT)
+  step-by-step; the keyboard lights the current key BLUE and the next key RED.
+  Strictly user-paced - only a correct key press moves the cursor: correct
+  press flashes GREEN, then arms the next step after that step's delta; wrong
+  press flashes ALL RED (MISS) and keeps waiting on the same step; doing
+  nothing only pulses the expected key AMBER (1200-8000 ms). Nothing
+  auto-advances, so the 0x03 TIMEOUT event is never emitted
 - Custom BLE GATT service for the mobile app:
   - 0xBE01 Score Upload (WRITE)
   - 0xBE02 Playback Control (WRITE: PLAYER A/B + Mode C 0x30-0x35)
   - 0xBE03 Live Keypress (WRITE)
   - 0xBE04 Status (READ + NOTIFY)
-  - 0xBE05 Mode C Events (NOTIFY: HIT/MISS/TIMEOUT/DONE)
+  - 0xBE05 Mode C Events (NOTIFY: HIT/MISS/DONE; 0x03 TIMEOUT reserved, never sent)
 - USB CDC debug console (PING, PLAY, MODE A, MODE B, LOAD:n, BRIGHTNESS v,
   HUE v, EFFECT n, REBOOT DFU)
 - DFU trigger: 4-corner combo Y+N+P+/ cycles effect, diagonal P+N reboots
@@ -48,6 +51,11 @@ BLE EVENTS characteristic (0xBE05, NOTIFY) payload = 4 bytes:
 
 - 0x01 HIT (key = correct key), 0x02 MISS (key = wrong key),
   0x03 TIMEOUT (key = 0), 0x04 DONE (key = 0)
+
+0x03 stays in the protocol so older app builds need no change, but it is no
+longer emitted: a step waits for the correct key indefinitely rather than
+timing out and skipping. `duration_ms` is now only the reminder-pulse interval
+(floored at 1200 ms, capped at 8000 ms) - not a deadline.
 
 All 15 physical keys are detected via the ZMK position event, including the
 four corners that are bound to &none in the keymap.
@@ -107,10 +115,13 @@ Download the resulting .uf2 and drag it to the nice!nano USB drive.
    - Push every step with 0x31 PUSH (delta_ms, key 1..15, duration_ms)
    - Send 0x30 START with the step count
    - Current step's key lights BLUE, next step's key lights RED
-   - Press the BLUE key -> it flashes GREEN, advances, App receives HIT
-   - Press a wrong key -> all LEDs flash RED, App receives MISS
-   - Wait past duration_ms -> current key flashes RED, App receives TIMEOUT,
-     step is skipped
+   - Press the BLUE key -> it flashes GREEN and after this step's delta the
+     next step arms; App receives HIT
+   - Press a wrong key -> all LEDs flash RED, App receives MISS, and the step
+     stays put - a wrong press never advances
+   - Wait -> the expected key pulses AMBER every duration_ms (1200-8000 ms) as
+     a reminder and nothing else happens. The cursor only moves on a correct
+     press, so no TIMEOUT event is sent
    - After the last step, LEDs go dark, App receives DONE
 
 ## Known TODO

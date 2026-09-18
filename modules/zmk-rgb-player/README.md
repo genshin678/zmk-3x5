@@ -16,12 +16,17 @@ Provides:
 - Score playback engine: load via USB CDC or BLE GATT, auto-press + light
   keys in mode B (mode A = light only)
 - **Mode C (Assisted Play-Along / 引导弹奏):** phone App pushes the score
-  step-by-step; the keyboard lights the current key BLUE and the next key RED.
-  Strictly user-paced - only a correct key press moves the cursor: correct
-  press flashes GREEN, then arms the next step after that step's delta; wrong
-  press flashes ALL RED (MISS) and keeps waiting on the same step; doing
-  nothing only pulses the expected key AMBER (1200-8000 ms). Nothing
-  auto-advances, so the 0x03 TIMEOUT event is never emitted
+  step-by-step; the keyboard lights the step's keys BLUE and the next step's
+  keys RED. **A step is a chord, not a note:** it carries a 15-bit key mask and
+  is satisfied once every key in it has been pressed (in any order - a rolled
+  chord counts), so one step is one cell of the printed sheet, i.e. one 小节
+- **Mode C pacing is switchable at run time** (0x36 MODE_C_PACE, mid-session
+  included, in both directions). MANUAL waits for the user and nothing advances
+  on a clock: a correct press flashes GREEN then arms the next step after that
+  step's delta, a wrong press flashes ALL RED (MISS) and stays put, and a step
+  simply keeps waiting - there is no amber pulse any more. AUTO walks the score
+  itself and does not judge presses. The 0x03 TIMEOUT event is never emitted in
+  either pace
 - Custom BLE GATT service for the mobile app:
   - 0xBE01 Score Upload (WRITE)
   - 0xBE02 Playback Control (WRITE: PLAYER A/B + Mode C 0x30-0x35)
@@ -42,20 +47,40 @@ BLE CONTROL characteristic (0xBE02):
 | cmd | params | meaning |
 |-----|--------|---------|
 | 0x30 MODE_C_START | u16 note_count | begin (after all steps pushed) |
-| 0x31 MODE_C_PUSH  | u16 delta_ms, u8 key(1..15), u8 duration_ms | push one step |
+| 0x31 MODE_C_PUSH  | u16 delta_ms, u16 key_mask, u8 duration_ms | push one step (a chord) |
 | 0x32 MODE_C_TICK  | u32 app_ms | reference clock (informational) |
-| 0x35 MODE_C_STOP  | -- | abort |
+| 0x35 MODE_C_STOP  | -- | abort playback **and clear the step table** |
+| 0x36 MODE_C_PACE  | u8 pace (0 = manual, 1 = auto) | switch pacing, any time |
 
 BLE EVENTS characteristic (0xBE05, NOTIFY) payload = 4 bytes:
 `[event_code, key, step_lo, step_hi]`
 
-- 0x01 HIT (key = correct key), 0x02 MISS (key = wrong key),
-  0x03 TIMEOUT (key = 0), 0x04 DONE (key = 0)
+- 0x01 HIT (key = lowest key of the satisfied chord), 0x02 MISS (key = the
+  wrong key pressed), 0x03 TIMEOUT (never sent), 0x04 DONE (key = 0),
+  0x05 STEP (key = how many keys the step wants, step = its index)
 
-0x03 stays in the protocol so older app builds need no change, but it is no
-longer emitted: a step waits for the correct key indefinitely rather than
-timing out and skipping. `duration_ms` is now only the reminder-pulse interval
-(floored at 1200 ms, capped at 8000 ms) - not a deadline.
+0x05 STEP is emitted every time a step arms, in **both** paces. In manual pace it
+is a second opinion on the cursor; in auto pace it is the only one there is -
+auto never emits HIT, so a companion display deriving the position from HITs would
+sit on cell 0 forever.
+
+0x03 stays in the protocol so older app builds need no change, but it is no longer
+emitted: a step waits for the user indefinitely rather than timing out and
+skipping. `duration_ms` is now purely informational - nothing times out at all.
+
+`key_mask` is bit(k-1) for key k in 1..15 and must be non-zero. Bit 15 (key 16) is
+rejected rather than ignored: the renderer has no pixel for it, so a step carrying
+it could never be satisfied and would hang the run with no error. Rests are not
+steps - rest time folds into the preceding step's `delta`.
+
+The step table costs 2048 x 5 bytes = 10 KiB of RAM (a packed struct of
+u16 delta, u16 mask, u8 duration), up from 8 KiB when a step was one key.
+
+Firmware capability is advertised in BE04 status byte 8: bit0 = wide delta (delta
+not clamped to 1 s on a HIT), bit1 = chord mask (this 6-byte PUSH layout). Note that
+firmware *without* bit1 does not reject a 6-byte PUSH - it parses it with the old
+5-byte layout and lights a wrong chord with no error at all - so a client has to
+keep sending single keys until the bit appears.
 
 All 15 physical keys are detected via the ZMK position event, including the
 four corners that are bound to &none in the keymap.
@@ -112,16 +137,22 @@ Download the resulting .uf2 and drag it to the nice!nano USB drive.
 
 6. Mode C (verify P2.1, needs phone app)
    - Connect, enable NOTIFY on 0xBE04 and 0xBE05
-   - Push every step with 0x31 PUSH (delta_ms, key 1..15, duration_ms)
-   - Send 0x30 START with the step count
-   - Current step's key lights BLUE, next step's key lights RED
-   - Press the BLUE key -> it flashes GREEN and after this step's delta the
-     next step arms; App receives HIT
-   - Press a wrong key -> all LEDs flash RED, App receives MISS, and the step
-     stays put - a wrong press never advances
-   - Wait -> the expected key pulses AMBER every duration_ms (1200-8000 ms) as
-     a reminder and nothing else happens. The cursor only moves on a correct
-     press, so no TIMEOUT event is sent
+   - Send 0x35 STOP first: it clears the step table. Skipping it makes a second
+     run append to the first and play both scores
+   - Push every step with 0x31 PUSH (delta_ms, key_mask, duration_ms). All keys of
+     one sheet cell travel in a single PUSH - bit(k-1) for key k
+   - Send 0x36 PACE 0 (manual), then 0x30 START with the step count
+   - The step's keys light BLUE, the next step's keys light RED; a key wanted by
+     both stays BLUE. App receives STEP for every arming
+   - Press every BLUE key, in any order (they need not be simultaneous) -> they
+     flash GREEN and after this step's delta the next step arms; App receives HIT
+   - Press a wrong key -> all LEDs flash RED, App receives MISS, and the step stays
+     put - a wrong press never advances, and the keys of the chord that were already
+     accepted are kept, so one slip does not force a full restart
+   - Wait -> nothing happens and the blue cue simply stays. No amber pulse, no
+     TIMEOUT event
+   - Send 0x36 PACE 1 mid-run -> the keyboard walks the score by itself from the step
+     currently on screen; 0x36 PACE 0 hands it back to you
    - After the last step, LEDs go dark, App receives DONE
 
 ## Known TODO

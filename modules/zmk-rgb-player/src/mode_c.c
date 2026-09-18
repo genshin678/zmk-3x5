@@ -79,13 +79,20 @@ static const struct led_rgb CUE_GREEN = { .r = 0,   .g = 255, .b = 0   };
 
 /* ---- release-verification build tag ----
  *
- * CONFIG_LOG=n compiles every LOG_* macro away, arguments included, so no log
- * string survives into the image and there is nothing text-shaped to look for in a
- * released .uf2. This blob is the substitute: it is plain .rodata, it is referenced
- * from mode_c_init() through a volatile sink (so neither the optimiser nor
- * --gc-sections can drop it), and it can be grepped out of the flashed image to
- * answer "is this board actually running the chord-mask build?". */
-static const uint8_t mc_build_tag[] = "MCV2/CHORD-MASK+MANUAL-AUTO-PACE";
+ * CONFIG_LOG=n compiles every LOG_* macro away, arguments included, so no log string
+ * survives into the image and there is nothing text-shaped to look for in a released
+ * .uf2. This blob is the substitute: it is plain .rodata, and it can be scanned out of
+ * the flashed image to answer "is this board really running the chord-mask build?".
+ *
+ * It is reached through a volatile POINTER, not a constant index. A plain constant subscript
+ * folded into an immediate by the compiler, which leaves the array unreferenced and
+ * lets --gc-sections drop it - the build still succeeds, the module is still
+ * warning-free, and the tag is silently missing from the image. That is what the first
+ * attempt at this did. A volatile pointer forces a real load, hence a relocation, hence
+ * a section the linker has to keep; __attribute__((used)) is belt and braces. */
+static const uint8_t mc_build_tag[] __attribute__((used)) =
+    "MCV2/CHORD-MASK+MANUAL-AUTO-PACE";
+static const uint8_t *volatile mc_build_tag_probe = mc_build_tag;
 static volatile uint8_t mc_build_tag_sink;
 
 /* ---- helpers ---- */
@@ -369,6 +376,6 @@ int mode_c_init(void) {
     step_count = 0;
     cur_step = 0;
     /* Touch the build tag so the linker keeps it - see the comment on mc_build_tag. */
-    mc_build_tag_sink = mc_build_tag[0];
+    mc_build_tag_sink = *mc_build_tag_probe;
     return 0;
 }

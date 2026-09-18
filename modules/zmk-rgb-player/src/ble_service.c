@@ -164,7 +164,9 @@ static ssize_t on_keypress_write(struct bt_conn *conn,
      * The effects tick renders the wave on the next 10ms cycle. */
     effects_on_key_down(k - 1);
     keypress_key = (int8_t)(k - 1);
-    k_work_schedule(&keypress_up_work, K_MSEC(80));
+    /* reschedule, not schedule: a repeat inside 80 ms must extend the highlight from
+     * the LATEST press instead of expiring on the first one's deadline. */
+    k_work_reschedule(&keypress_up_work, K_MSEC(80));
     return len;
 }
 

@@ -145,7 +145,10 @@ static void fire_note(uint8_t idx, uint16_t duration_ms) {
         zmk_hid_keyboard_press(KEY_SCANCODE[idx]);
         zmk_endpoints_send_report(0x07); /* HID keyboard usage page */
         rel_items[idx].idx = idx;
-        k_work_schedule(&rel_items[idx].dwork, K_MSEC(press_ms));
+        /* reschedule, not schedule: when this key's previous release is still pending,
+         * k_work_schedule() keeps the OLD (earlier) deadline and cuts the new note
+         * short. The latest note must own the deadline. */
+        k_work_reschedule(&rel_items[idx].dwork, K_MSEC(press_ms));
     }
 }
 

@@ -96,7 +96,7 @@ static const struct led_rgb CUE_GREEN = { .r = 0,   .g = 255, .b = 0   };
  * attempt at this did. A volatile pointer forces a real load, hence a relocation, hence
  * a section the linker has to keep; __attribute__((used)) is belt and braces. */
 static const uint8_t mc_build_tag[] __attribute__((used)) =
-    "MCV3/HID-AUTOPLAY+COMBO-LOCK";
+    "MCV4/AUTO-CLOCK-FIX+COMBO-LOCK";
 static const uint8_t *volatile mc_build_tag_probe = mc_build_tag;
 static volatile uint8_t mc_build_tag_sink;
 
@@ -236,7 +236,10 @@ static void flash_mask(uint16_t mask, const struct led_rgb c, int ms) {
     led_pixel_clear();
     paint_mask(mask, c);
     led_pixel_update();
-    k_work_schedule(&restore_work, K_MSEC(ms));
+    /* reschedule, not schedule: a second flash landing inside the first one's window
+     * would otherwise be ignored (k_work_schedule() no-ops on an already-delayed item
+     * and keeps the OLD deadline), cutting the newer flash short. */
+    k_work_reschedule(&restore_work, K_MSEC(ms));
 }
 
 /* ---- work handlers ---- */
@@ -265,16 +268,35 @@ static void restore_work_fn(struct k_work *work) {
 
 /* ---- step arming / progression ---- */
 
-/* Arm (or disarm) the auto-advance clock for the step currently on screen. In
- * manual pace this deliberately leaves no timer pending at all: a step waits for
- * the user for as long as it takes. */
+/* Arm the auto-advance clock for the step currently on screen. In manual pace this
+ * arms nothing: a step waits for the user for as long as it takes. */
 static void mc_arm_timer(void) {
-    k_work_cancel_delayable(&step_work);
     if (state != MC_RUNNING || pace != MODE_C_PACE_AUTO) {
+        /* Deliberately does NOT cancel. A timer left over from a previous arm is
+         * harmless - step_work_fn re-checks state and pace before doing anything -
+         * whereas cancelling here is what broke auto play; see below. The two places
+         * that genuinely must kill the clock (mode_c_start, mode_c_stop) cancel it
+         * explicitly, and neither of them runs inside a work handler. */
         return;
     }
-    k_work_schedule(&step_work,
-                    K_MSEC(clamp_delta(steps[cur_step].delta, MODE_C_AUTO_MIN_MS)));
+    /* k_work_reschedule, NOT k_work_cancel_delayable() + k_work_schedule().
+     *
+     * This function runs from inside step_work's OWN handler:
+     *     step_work_fn -> mc_advance -> mc_arm_step -> mc_arm_timer.
+     * Cancelling a work item from its own handler does not merely fail: it sets
+     * K_WORK_CANCELING_BIT on that item. The k_work_schedule() that used to follow was
+     * then silently refused, because its admission test is
+     *     (k_work_busy_get() & ~K_WORK_RUNNING) == 0
+     * and CANCELING makes that non-zero. No deadline was armed and nothing was logged,
+     * so AUTO advanced exactly once (step 0 -> step 1) and then froze forever: the
+     * strip lit a cue and never moved again.
+     *
+     * reschedule() is unschedule + schedule and never touches CANCELING, so it is the
+     * only safe way to re-arm an item from within that item's handler. player.c's 5 ms
+     * playback tick and rgb_control.c's bri/hue loops are periodic for exactly this
+     * reason: they re-arm with k_work_schedule() but never cancel first. */
+    k_work_reschedule(&step_work,
+                      K_MSEC(clamp_delta(steps[cur_step].delta, MODE_C_AUTO_MIN_MS)));
 }
 
 static void mc_arm_step(void) {

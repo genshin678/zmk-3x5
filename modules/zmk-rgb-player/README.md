@@ -25,8 +25,19 @@ Provides:
   on a clock: a correct press flashes GREEN then arms the next step after that
   step's delta, a wrong press flashes ALL RED (MISS) and stays put, and a step
   simply keeps waiting - there is no amber pulse any more. AUTO walks the score
-  itself and does not judge presses. The 0x03 TIMEOUT event is never emitted in
-  either pace
+  itself, does not judge presses, and **actually plays the game**: every step it
+  arms is emitted as real USB-HID keycodes (all keys of the mask together, held
+  50-200 ms then lifted), reusing the same HID engine mode B uses, so the notes
+  land in the host/game and the LEDs just follow along. The 0x03 TIMEOUT event is
+  never emitted in either pace
+- **All combos are locked while Mode C runs** (Y+P brightness, H+; hue,
+  Y+N+P+/ effect cycle, U+M+O+. bond clear, I+K transport toggle, P+N DFU), via a
+  `mode_c_is_active()` guard at the top of each behaviour. The play-along cue owns
+  the LED strip and the score owns those keys, so a combo pressed mid-run can no
+  longer push the blue/red cue off the LEDs or flip the transport out from under
+  the notes. They come back the instant the run ends (DONE) or you stop it (0x35
+  STOP). To force DFU mid-song, double-tap RESET - that path is hardware and is
+  never gated
 - Custom BLE GATT service for the mobile app:
   - 0xBE01 Score Upload (WRITE)
   - 0xBE02 Playback Control (WRITE: PLAYER A/B + Mode C 0x30-0x35)
@@ -77,7 +88,9 @@ The step table costs 2048 x 5 bytes = 10 KiB of RAM (a packed struct of
 u16 delta, u16 mask, u8 duration), up from 8 KiB when a step was one key.
 
 Firmware capability is advertised in BE04 status byte 8: bit0 = wide delta (delta
-not clamped to 1 s on a HIT), bit1 = chord mask (this 6-byte PUSH layout). Note that
+not clamped to 1 s on a HIT), bit1 = chord mask (this 6-byte PUSH layout), bit2 =
+auto pace plays the game (AUTO emits real HID keycodes; firmware without it only
+animates the LEDs). Note that
 firmware *without* bit1 does not reject a 6-byte PUSH - it parses it with the old
 5-byte layout and lights a wrong chord with no error at all - so a client has to
 keep sending single keys until the bit appears.
@@ -152,7 +165,10 @@ Download the resulting .uf2 and drag it to the nice!nano USB drive.
    - Wait -> nothing happens and the blue cue simply stays. No amber pulse, no
      TIMEOUT event
    - Send 0x36 PACE 1 mid-run -> the keyboard walks the score by itself from the step
-     currently on screen; 0x36 PACE 0 hands it back to you
+     currently on screen **and plays it into the game** (real HID keycodes appear on the
+     host); 0x36 PACE 0 hands it back to you
+   - While it runs, press Y+N+P+/ (effect cycle) or H+; (hue): the combos are inert and
+     the blue/red cue stays put. Stop the run and they work again
    - After the last step, LEDs go dark, App receives DONE
 
 ## Known TODO
@@ -178,4 +194,4 @@ modules/zmk-rgb-player/
 - include/zmk_rgbeffect/ (7 headers: led_pixel, effects, player, ble_service,
   rgb_control, dfu, mode_c)
 - src/ (led_pixel, effects, player, ble_service, rgb_control, dfu, cdc,
-  mode_c, module_init) + behaviors/ 5 C files
+  mode_c, module_init) + behaviors/ 7 C files (incl. behavior_out_guard.c)

@@ -5,8 +5,8 @@
  *   BE01 Score Upload    WRITE (append chunks to staging buffer)
  *   BE02 Playback Ctrl  WRITE (PLAY/PAUSE/STOP/MODE/CLEAR/LOAD_DONE + Mode C)
  *   BE03 Live Keypress  WRITE (1..15, triggers ripple at that key)
- *   BE04 Status         READ+NOTIFY (state, mode, position_ms, step)
- *   BE05 Events         NOTIFY (Mode C: HIT/MISS/TIMEOUT/DONE)
+ *   BE04 Status         READ+NOTIFY (state, mode, position_ms, step, fw_flags)
+ *   BE05 Events         NOTIFY (Mode C: HIT/MISS/DONE/STEP)
  */
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -63,7 +63,11 @@ static void status_rebuild(void) {
     uint16_t step = mode_c_is_active() ? mode_c_current_step() : 0;
     memcpy(&status_buf[6], &step, 2);
     /* Capability flags so the App can negotiate features without a version query.
-     * bit0: wide delta (delta not clamped to 1s on a HIT). */
+     * bit0: wide delta (delta not clamped to 1s on a HIT).
+     * bit1: chord mask - MODE_C_PUSH takes a u16 key mask instead of a u8 key, so
+     *       one step is one chord/one sheet cell. An App that only knows the 5-byte
+     *       layout must keep sending single keys until it sees this bit, because a
+     *       6-byte PUSH would be misread by the old parser rather than rejected. */
     status_buf[8] = (uint8_t)ZMK_RGB_PLAYER_FW_FLAGS;
 }
 
@@ -116,8 +120,15 @@ static ssize_t on_control_write(struct bt_conn *conn,
             mode_c_start((uint16_t)(p[1] | (p[2] << 8)));
             break;
         case MODE_C_PUSH:
-            if (len < 5) return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
-            mode_c_push((uint16_t)(p[1] | (p[2] << 8)), p[3], p[4]);
+            /* 6 bytes: u16 delta_ms, u16 key_mask, u8 duration_ms. The mask, not a
+             * single key - see ble_service.h. A 5-byte write here is an App built
+             * against the old single-key layout and must be rejected rather than
+             * reinterpreted: p[3]/p[4] would be read as a mask built from the key
+             * byte and the duration, which would light a wrong chord silently. */
+            if (len < 6) return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+            mode_c_push((uint16_t)(p[1] | (p[2] << 8)),
+                        (uint16_t)(p[3] | (p[4] << 8)),
+                        p[5]);
             break;
         case MODE_C_TICK:
             if (len < 5) return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
@@ -127,6 +138,10 @@ static ssize_t on_control_write(struct bt_conn *conn,
             break;
         case MODE_C_STOP:
             mode_c_stop();
+            break;
+        case MODE_C_PACE:
+            if (len < 2) return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+            mode_c_set_pace(p[1]);
             break;
 
         default:
@@ -146,9 +161,7 @@ static ssize_t on_keypress_write(struct bt_conn *conn,
     uint8_t k = ((const uint8_t *)buf)[0];
     if (k < 1 || k > 15) return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
     /* Sets last_key so the ripple wave starts from this key position.
-     * The effects tick renders the wave on the next 10ms cycle.
-     * TODO: schedule effects_on_key_up(k-1) via k_work_delayable(60ms)
-     *       because k_msleep inside a GATT callback is unsafe. */
+     * The effects tick renders the wave on the next 10ms cycle. */
     effects_on_key_down(k - 1);
     keypress_key = (int8_t)(k - 1);
     k_work_schedule(&keypress_up_work, K_MSEC(80));
@@ -212,7 +225,7 @@ BT_GATT_SERVICE_DEFINE(zmk_player_svc,
 int ble_service_init(void) {
     /* GATT service is statically declared with BT_GATT_SERVICE_DEFINE and
      * auto-registered at boot (CONFIG_BT_GATT_DYNAMIC_DB=n). No manual
-     * call needed — and indeed impossible: with DYNAMIC_DB=n the static
+     * call needed - and indeed impossible: with DYNAMIC_DB=n the static
      * macro emits a `struct bt_gatt_service_static`, which doesn't match
      * the `struct bt_gatt_service *` arg of bt_gatt_service_register. */
     k_work_init_delayable(&keypress_up_work, keypress_up_work_fn);

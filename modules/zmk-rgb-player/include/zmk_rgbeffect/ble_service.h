@@ -8,9 +8,10 @@
  *   Score Upload    [WRITE]  - accepts the binary score blob in chunks
  *   Playback Ctrl   [WRITE]  - PLAY=0x01 / PAUSE=0x02 / STOP=0x03 / MODE=0x10 / CLEAR=0x20
  *   Live Keypress   [WRITE]  - single byte 1..15, fires immediate LED + (mode B) HID
- *   Status          [READ+NOTIFY] - 8 bytes: state(1), mode(1), pos_ms(4), step(2)
+ *   Status          [READ+NOTIFY] - 9 bytes: state(1), mode(1), pos_ms(4), step(2),
+ *                            fw_flags(1)
  *   Events          [NOTIFY] - 4 bytes: event_code(1), key(1), step_lo(1), step_hi(1)
- *                            used by Mode C to report HIT/MISS/TIMEOUT/DONE
+ *                            used by Mode C to report HIT/MISS/DONE/STEP
  *
  * NOTE: PLAYER_CTRL_* command opcodes are defined in player.h (single source of
  * truth) to avoid macro redefinition. Mode C command opcodes are defined below.
@@ -49,10 +50,16 @@
 #define ZMK_PLAYER_CHRC_STATUS     BT_UUID_DECLARE_16(0xBE04)  /* READ+NOTIFY */
 #define ZMK_PLAYER_CHRC_EVENTS     BT_UUID_DECLARE_16(0xBE05)  /* NOTIFY (Mode C events) */
 
-/* Mode C (Assisted Play-Along) control commands (in the CONTROL characteristic). */
+/* Mode C (Assisted Play-Along) control commands (in the CONTROL characteristic).
+ *
+ * A step is a CHORD: MODE_C_PUSH carries a 15-bit key mask, not a single key, so
+ * one step maps to one cell of the printed sheet. An App that only knows the older
+ * 5-byte PUSH layout must not send it to this build - it would be read as a mask
+ * with the wrong bytes. BE04 status byte 8 bit1 advertises the change. */
 #define MODE_C_START  0x30  /* + u16 note_count */
-#define MODE_C_PUSH   0x31  /* + u16 delta_ms, u8 key(1..15), u8 duration_ms */
+#define MODE_C_PUSH   0x31  /* + u16 delta_ms, u16 key_mask, u8 duration_ms */
 #define MODE_C_TICK   0x32  /* + u32 app_ms (reference clock, informational) */
-#define MODE_C_STOP   0x35  /* (no params) */
+#define MODE_C_STOP   0x35  /* (no params) aborts playback, clears the step table */
+#define MODE_C_PACE   0x36  /* + u8 pace: 0 = manual (press to advance), 1 = auto */
 
 int ble_service_init(void);

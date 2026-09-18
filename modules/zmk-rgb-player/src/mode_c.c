@@ -1,27 +1,41 @@
 /*
- * mode_c.c - Assisted Play-Along ("引导弹奏") mode
+ * mode_c.c - Assisted Play-Along ("引导弹奏")
  *
- * Guided, user-paced playback. The keyboard claims the 15-pixel WS2812B strip
- * (effects_player_enter) and renders:
- *   - current step key  -> BLUE
- *   - next   step key   -> RED
- * STRICTLY USER-PACED: the cursor never moves on its own - only the correct
- * physical press advances it.
- * On a correct press: GREEN flash -> wait `delta` ms -> next step arms.
- * On a wrong press:   ALL RED flash -> MISS event, stay on this step.
- * On no press:        AMBER pulse on the expected key -> stay on this step.
- *                     (There is no timeout-skip any more.)
+ * Guided playback over the 15-pixel WS2812B strip.
  *
- * Why that changed: the previous build auto-advanced every 300 ms. `duration` is
- * a uint8 that mc_arm_step() floored to 300, so an untouched keyboard played the
- * whole score by itself - the run was never actually step-by-step.
+ * ONE STEP = ONE CELL = ONE CHORD. `mask` is a set of keys (bit k-1 for key k in
+ * 1..15) and a step is satisfied only once every key in it has been pressed. That
+ * mirrors how the source score groups notes: the App used to expand a chord into
+ * several consecutive single-key steps, which turned a chord into a fast arpeggio
+ * and made the lights disagree with the printed sheet.
  *
- * Physical key presses are captured from the ZMK position_state_changed event
- * so ALL 15 keys are detected, including the four corners that are bound to
- * &none in the keymap (they still generate a position event).
+ * PACING - switchable at run time with 0x36 MODE_C_PACE, mid-session included:
  *
- * Timing is driven entirely by the user; MODE_C_TICK only refreshes an
- * informational reference time.
+ *   MANUAL  Strictly user-paced. Nothing here advances on a clock: a step clears
+ *           only when all of its keys have been pressed, in any order (a rolled
+ *           chord counts - completeness is required, simultaneity is not). A wrong
+ *           key flashes red and reports MISS but does not move the cursor.
+ *   AUTO    The keyboard plays the score itself: each step is shown for its own
+ *           `delta` and then advances. Physical presses are not judged.
+ *
+ * Fingers that stay down carry over: when a step is armed, keys already held that
+ * belong to it are counted immediately, so a chord sharing a finger with the one
+ * before it cannot deadlock waiting for a press that will never come.
+ *
+ * RENDERING - the current step's keys are BLUE and the next step's keys (minus any
+ * key already blue: a note shared by both must keep saying "press this now") are
+ * RED. There is no amber "hurry up" pulse; a step simply waits.
+ *
+ * Why the previous behaviour changed: `duration` is a uint8 and mc_arm_step()
+ * floored it at 300 ms, so an untouched keyboard walked the whole score by itself -
+ * the run was never really step-by-step. Nothing times out any more.
+ *
+ * Physical key presses arrive from ZMK's position_state_changed, so all 15 keys are
+ * detected, including the four corner keys bound to &none in the keymap: a press
+ * there still generates a position event and still counts as a wrong key.
+ *
+ * Timing is driven by the score; MODE_C_TICK only refreshes an informational
+ * reference time for log correlation.
  */
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -37,89 +51,116 @@ LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 typedef enum { MC_IDLE, MC_RUNNING, MC_ADVANCING } mc_state_t;
 
 typedef struct __attribute__((packed)) {
-    uint8_t  key;       /* 1..15 */
-    uint8_t  duration;  /* ms, reminder interval upper bound (no timeout-skip) */
-    uint16_t delta;     /* ms, gap after a HIT before the next step arms */
+    uint16_t delta;    /* ms: post-HIT gap (manual) / the step's own length (auto) */
+    uint16_t mask;     /* bit(k-1) for key k in 1..15; never 0 */
+    uint8_t  duration; /* ms; informational - nothing in this file times out */
 } mc_step_t;
 
 static mc_step_t steps[MODE_C_MAX_STEPS];
 static uint16_t  step_count = 0;   /* number of PUSHed steps */
 static uint16_t  cur_step   = 0;
 static mc_state_t state     = MC_IDLE;
-static uint32_t  app_ref_ms = 0;
+static uint8_t   pace       = MODE_C_PACE_MANUAL;
+static uint16_t  pressed_mask = 0; /* keys physically down right now */
+static uint16_t  hit_mask     = 0; /* keys of the current step already satisfied */
+static uint32_t  app_ref_ms   = 0;
 
-static struct k_work_delayable timeout_work;
-static struct k_work_delayable advance_work;
-static struct k_work_delayable restore_work;
+static struct k_work_delayable step_work;    /* AUTO: the step's own clock */
+static struct k_work_delayable advance_work; /* post-HIT gap -> next step */
+static struct k_work_delayable restore_work; /* undo a flash */
 
 static void mc_advance(void);
-static void mc_arm_reminder(void);
 
-/* Cue colors (GRB order not needed; led_rgb is r,g,b). */
+/* Cue colors (led_rgb is r,g,b; the ST-1209RGB G,R,B wire order is handled by the
+ * driver, which is where that measurement belongs). */
 static const struct led_rgb CUE_BLUE  = { .r = 0,   .g = 40,  .b = 255 };
 static const struct led_rgb CUE_RED   = { .r = 255, .g = 0,   .b = 0   };
 static const struct led_rgb CUE_GREEN = { .r = 0,   .g = 255, .b = 0   };
-/* Reminder pulse. The expected key is already lit BLUE, so the "still waiting on
- * you" nudge has to be a different colour to register as a nudge at all. */
-static const struct led_rgb CUE_AMBER = { .r = 255, .g = 110, .b = 0   };
 
-/* How long a step waits before pulsing that reminder, in ms.
+/* ---- release-verification build tag ----
  *
- * This used to be `steps[].duration`, the per-step timeout - but that field is a
- * uint8 (so <= 255) and mc_arm_step() floored it at 300, meaning every step
- * elapsed after 300 ms and the guide advanced by itself. The wire field is kept
- * for compatibility and used here only as an upper bound; the floor is what
- * actually governs, and nothing in this file advances on it any more. */
-#define MODE_C_REMIND_MIN_MS 1200u
-#define MODE_C_REMIND_MAX_MS 8000u
+ * CONFIG_LOG=n compiles every LOG_* macro away, arguments included, so no log
+ * string survives into the image and there is nothing text-shaped to look for in a
+ * released .uf2. This blob is the substitute: it is plain .rodata, it is referenced
+ * from mode_c_init() through a volatile sink (so neither the optimiser nor
+ * --gc-sections can drop it), and it can be grepped out of the flashed image to
+ * answer "is this board actually running the chord-mask build?". */
+static const uint8_t mc_build_tag[] = "MCV2/CHORD-MASK+MANUAL-AUTO-PACE";
+static volatile uint8_t mc_build_tag_sink;
+
+/* ---- helpers ---- */
+
+static uint8_t lowest_key(uint16_t mask) {
+    for (uint8_t k = 1; k <= 15; k++) {
+        if (mask & (uint16_t)(1u << (k - 1))) {
+            return k;
+        }
+    }
+    return 0;
+}
+
+/* Deliberately not __builtin_popcount: on arm-none-eabi that lowers to a libgcc
+ * call (__popcountsi2) for no benefit here - this runs once per step. */
+static uint8_t chord_size(uint16_t mask) {
+    uint8_t n = 0;
+    for (uint8_t k = 0; k < 15; k++) {
+        if (mask & (uint16_t)(1u << k)) {
+            n++;
+        }
+    }
+    return n;
+}
+
+static uint32_t clamp_delta(uint32_t want, uint32_t floor_ms) {
+    if (want < floor_ms) {
+        want = floor_ms;
+    }
+    if (want > MODE_C_DELTA_MAX_MS) {
+        want = MODE_C_DELTA_MAX_MS;
+    }
+    return want;
+}
+
+static void paint_mask(uint16_t mask, const struct led_rgb c) {
+    for (int i = 0; i < LED_PIXEL_COUNT; i++) {
+        if (mask & (uint16_t)(1u << i)) {
+            led_pixel_set((uint8_t)i, c.r, c.g, c.b);
+        }
+    }
+}
 
 /* ---- rendering ---- */
 
-static void render_blue_red(void) {
+static void render_step(void) {
     led_pixel_clear();
-    if (cur_step >= step_count) { led_pixel_update(); return; }
-    int cur = (int)steps[cur_step].key - 1;
-    if (cur >= 0 && cur < LED_PIXEL_COUNT) {
-        led_pixel_set((uint8_t)cur, CUE_BLUE.r, CUE_BLUE.g, CUE_BLUE.b);
+    if (cur_step >= step_count) {
+        led_pixel_update();
+        return;
     }
+    uint16_t cur = steps[cur_step].mask;
+    paint_mask(cur, CUE_BLUE);
     if (cur_step + 1 < step_count) {
-        int nxt = (int)steps[cur_step + 1].key - 1;
-        if (nxt >= 0 && nxt < LED_PIXEL_COUNT) {
-            led_pixel_set((uint8_t)nxt, CUE_RED.r, CUE_RED.g, CUE_RED.b);
-        }
+        /* A key belonging to both this step and the next stays BLUE: the cue for
+         * "press this now" must win over the cue for "press this next". */
+        paint_mask((uint16_t)(steps[cur_step + 1].mask & (uint16_t)~cur), CUE_RED);
     }
     led_pixel_update();
 }
 
-static void flash_one(int idx, const struct led_rgb c, int ms) {
+static void flash_mask(uint16_t mask, const struct led_rgb c, int ms) {
     led_pixel_clear();
-    if (idx >= 0 && idx < LED_PIXEL_COUNT) {
-        led_pixel_set((uint8_t)idx, c.r, c.g, c.b);
-    }
-    led_pixel_update();
-    k_work_schedule(&restore_work, K_MSEC(ms));
-}
-
-static void flash_all(const struct led_rgb c, int ms) {
-    led_pixel_clear();
-    for (int i = 0; i < LED_PIXEL_COUNT; i++) {
-        led_pixel_set((uint8_t)i, c.r, c.g, c.b);
-    }
+    paint_mask(mask, c);
     led_pixel_update();
     k_work_schedule(&restore_work, K_MSEC(ms));
 }
 
 /* ---- work handlers ---- */
 
-static void timeout_work_fn(struct k_work *work) {
+static void step_work_fn(struct k_work *work) {
     ARG_UNUSED(work);
     if (state != MC_RUNNING) return;
-    /* Reminder only. This handler used to flash the key RED, report TIMEOUT and
-     * skip to the next step - which is exactly the "the score plays itself"
-     * behaviour we are removing. A step now waits for the user indefinitely. */
-    int cur = (int)steps[cur_step].key - 1;
-    flash_one(cur, CUE_AMBER, 180);
-    mc_arm_reminder();
+    if (pace != MODE_C_PACE_AUTO) return;   /* switched to manual while pending */
+    mc_advance();
 }
 
 static void advance_work_fn(struct k_work *work) {
@@ -129,28 +170,45 @@ static void advance_work_fn(struct k_work *work) {
 
 static void restore_work_fn(struct k_work *work) {
     ARG_UNUSED(work);
-    /* Only restore the blue/red display if we are still parked on a step
-     * (not mid-advance, where the advance work owns the next render). */
+    /* Only restore while parked on a step: mid-advance the advance work owns the
+     * next render, and re-drawing the step that was just hit would read as "press
+     * this again". */
     if (state == MC_RUNNING) {
-        render_blue_red();
+        render_step();
     }
 }
 
-/* ---- state machine ---- */
+/* ---- step arming / progression ---- */
 
-/* Arm the "you are still on this step" pulse. Advances nothing: the only way
- * out of a step is mode_c_on_position() seeing the correct key. */
-static void mc_arm_reminder(void) {
-    uint32_t to = steps[cur_step].duration;
-    if (to < MODE_C_REMIND_MIN_MS) to = MODE_C_REMIND_MIN_MS;
-    if (to > MODE_C_REMIND_MAX_MS) to = MODE_C_REMIND_MAX_MS;
-    k_work_schedule(&timeout_work, K_MSEC(to));
+/* Arm (or disarm) the auto-advance clock for the step currently on screen. In
+ * manual pace this deliberately leaves no timer pending at all: a step waits for
+ * the user for as long as it takes. */
+static void mc_arm_timer(void) {
+    k_work_cancel_delayable(&step_work);
+    if (state != MC_RUNNING || pace != MODE_C_PACE_AUTO) {
+        return;
+    }
+    k_work_schedule(&step_work,
+                    K_MSEC(clamp_delta(steps[cur_step].delta, MODE_C_AUTO_MIN_MS)));
 }
 
 static void mc_arm_step(void) {
     state = MC_RUNNING;
-    render_blue_red();
-    mc_arm_reminder();
+    hit_mask = (uint16_t)(pressed_mask & steps[cur_step].mask);
+    render_step();
+    mode_c_notify_event(MODE_C_EVT_STEP, chord_size(steps[cur_step].mask),
+                        cur_step);
+    mc_arm_timer();
+}
+
+static void mc_step_hit(void) {
+    uint16_t want = steps[cur_step].mask;
+    mode_c_notify_event(MODE_C_EVT_HIT, lowest_key(want), cur_step);
+    flash_mask(want, CUE_GREEN, 140);
+    k_work_cancel_delayable(&step_work);
+    state = MC_ADVANCING;
+    k_work_schedule(&advance_work,
+                    K_MSEC(clamp_delta(steps[cur_step].delta, MODE_C_HIT_GAP_MIN_MS)));
 }
 
 static void mc_advance(void) {
@@ -159,7 +217,7 @@ static void mc_advance(void) {
         state = MC_IDLE;
         led_pixel_clear();
         led_pixel_update();
-        effects_player_exit();   /* release the strip back to user effects */
+        effects_player_exit();   /* release the strip back to the user's effects */
         mode_c_notify_event(MODE_C_EVT_DONE, 0, step_count);
         LOG_INF("mode_c: finished %u steps", step_count);
         return;
@@ -167,83 +225,113 @@ static void mc_advance(void) {
     mc_arm_step();
 }
 
-/* ---- public API ---- */
+/* ---- physical key presses ---- */
 
 void mode_c_on_position(uint32_t position, bool pressed) {
-    if (!pressed) return;                 /* act only on press */
-    if (state != MC_RUNNING) return;
     if (position >= LED_PIXEL_COUNT) return;
 
-    uint8_t expected    = steps[cur_step].key;     /* 1..15 */
-    uint8_t pressed_key = (uint8_t)(position + 1);  /* position 0..14 -> 1..15 */
-
-    if (pressed_key == expected) {
-        /* HIT */
-        flash_one((int)position, CUE_GREEN, 140);
-        mode_c_notify_event(MODE_C_EVT_HIT, pressed_key, cur_step);
-        k_work_cancel_delayable(&timeout_work);
-        state = MC_ADVANCING;
-        uint32_t gap = steps[cur_step].delta;
-        if (gap < 80) gap = 140;     /* minimum so the green flash reads */
-        if (gap > MODE_C_DELTA_MAX_MS) gap = MODE_C_DELTA_MAX_MS;
-                                 /* was hard-coded to 1000; raised so long
-                                    rests keep their tempo (negotiated via
-                                    BE04 status byte 8, bit0) */
-        k_work_schedule(&advance_work, K_MSEC(gap));
+    uint16_t bit = (uint16_t)(1u << position);
+    /* Bookkeeping happens in every state, not just MC_RUNNING: a finger that goes
+     * down during the post-HIT gap must be counted when the next step arms. */
+    if (pressed) {
+        pressed_mask |= bit;
     } else {
-        /* MISS: flash all red, report, keep waiting on this step. */
-        flash_all(CUE_RED, 220);
-        mode_c_notify_event(MODE_C_EVT_MISS, pressed_key, cur_step);
-        k_work_cancel_delayable(&timeout_work);
-        mc_arm_reminder();
+        pressed_mask &= (uint16_t)~bit;
+    }
+
+    if (state != MC_RUNNING) return;
+    if (!pressed) return;
+    if (pace != MODE_C_PACE_MANUAL) return;   /* auto: lights only, no judging */
+
+    uint16_t want = steps[cur_step].mask;
+    if ((bit & want) == 0) {
+        /* Wrong key. Report it and stay put; the keys already accepted for this
+         * chord are kept, so one fat finger does not force a full restart. */
+        flash_mask(MODE_C_ALL_KEYS, CUE_RED, 220);
+        mode_c_notify_event(MODE_C_EVT_MISS, (uint8_t)(position + 1), cur_step);
+        return;
+    }
+
+    hit_mask |= bit;
+    if ((hit_mask & want) == want) {
+        mc_step_hit();
     }
 }
 
+/* ---- public API ---- */
+
 void mode_c_start(uint16_t note_count) {
-    if (state == MC_RUNNING || state == MC_ADVANCING) {
-        mode_c_stop();
-    }
     if (step_count == 0) {
         LOG_WRN("mode_c_start: no steps pushed yet");
         return;
     }
+    /* Restarting while a session is live drops the old playback state but KEEPS the
+     * step table: the App pushes first and starts second, so the table is the score
+     * we are about to play. (Clearing it here is mode_c_stop()'s job.) */
+    k_work_cancel_delayable(&step_work);
+    k_work_cancel_delayable(&advance_work);
+    k_work_cancel_delayable(&restore_work);
     cur_step = 0;
-    effects_player_enter();   /* claim the LED strip, stop effect tick */
-    LOG_INF("mode_c_start: %u steps (requested %u)", step_count, note_count);
+    hit_mask = 0;
+    pressed_mask = 0;
+    effects_player_enter();   /* claim the LED strip, stop the effect tick */
+    LOG_INF("mode_c_start: %u steps (requested %u), pace %u", step_count, note_count, pace);
     mc_arm_step();
 }
 
-void mode_c_push(uint16_t delta_ms, uint8_t key, uint8_t duration_ms) {
+void mode_c_push(uint16_t delta_ms, uint16_t key_mask, uint8_t duration_ms) {
     if (step_count >= MODE_C_MAX_STEPS) {
         LOG_WRN("mode_c_push: buffer full");
         return;
     }
-    if (key < 1 || key > 15) {
-        LOG_WRN("mode_c_push: bad key %u (need 1..15)", key);
+    /* A step must sound at least one key, and no bit above key 15 may be set: an
+     * out-of-range bit would be silently ignored by the renderer and the step could
+     * then never be satisfied. */
+    if (key_mask == 0 || (key_mask & (uint16_t)~MODE_C_ALL_KEYS) != 0) {
+        LOG_WRN("mode_c_push: bad mask 0x%04x (need 1..15)", key_mask);
         return;
     }
-    steps[step_count].key      = key;
-    steps[step_count].duration = duration_ms;
     steps[step_count].delta    = delta_ms;
+    steps[step_count].mask     = key_mask;
+    steps[step_count].duration = duration_ms;
     step_count++;
 }
 
 void mode_c_tick(uint32_t app_ms) {
     app_ref_ms = app_ms;
-    /* Informational only; Mode C timing lives on the keyboard clock.
-     * The app reference is logged so it can be correlated in a bug report. */
+    /* Informational only; Mode C timing lives on the keyboard clock. The reference
+     * is logged so it can be correlated in a bug report. */
     LOG_DBG("mode_c_tick: app_ref_ms=%u", app_ref_ms);
 }
 
 void mode_c_stop(void) {
-    k_work_cancel_delayable(&timeout_work);
+    k_work_cancel_delayable(&step_work);
     k_work_cancel_delayable(&advance_work);
     k_work_cancel_delayable(&restore_work);
     state = MC_IDLE;
+    hit_mask = 0;
+    pressed_mask = 0;
+    step_count = 0;   /* the table is per-session; the App always PUSHes again */
     led_pixel_clear();
     led_pixel_update();
     effects_player_exit();
     LOG_INF("mode_c_stop");
+}
+
+void mode_c_set_pace(uint8_t p) {
+    pace = (p == MODE_C_PACE_AUTO) ? MODE_C_PACE_AUTO : MODE_C_PACE_MANUAL;
+    LOG_INF("mode_c: pace -> %u", pace);
+    if (state == MC_RUNNING) {
+        /* Re-arm the step on screen so the switch takes effect immediately and in
+         * both directions: auto -> manual cancels the pending auto-advance and
+         * starts waiting for the user; manual -> auto starts that step's clock now
+         * rather than on the next hit. */
+        mc_arm_step();
+    }
+}
+
+uint8_t mode_c_get_pace(void) {
+    return pace;
 }
 
 bool mode_c_is_active(void) {
@@ -252,6 +340,10 @@ bool mode_c_is_active(void) {
 
 uint16_t mode_c_current_step(void) {
     return cur_step;
+}
+
+uint16_t mode_c_step_count(void) {
+    return step_count;
 }
 
 /* ---- init + ZMK position listener ---- */
@@ -270,11 +362,13 @@ ZMK_LISTENER(mode_c_position, mode_c_position_listener)
 ZMK_SUBSCRIPTION(mode_c_position, zmk_position_state_changed)
 
 int mode_c_init(void) {
-    k_work_init_delayable(&timeout_work, timeout_work_fn);
+    k_work_init_delayable(&step_work, step_work_fn);
     k_work_init_delayable(&advance_work, advance_work_fn);
     k_work_init_delayable(&restore_work, restore_work_fn);
     state = MC_IDLE;
     step_count = 0;
     cur_step = 0;
+    /* Touch the build tag so the linker keeps it - see the comment on mc_build_tag. */
+    mc_build_tag_sink = mc_build_tag[0];
     return 0;
 }

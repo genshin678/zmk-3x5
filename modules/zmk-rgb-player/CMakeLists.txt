@@ -18,6 +18,7 @@ target_sources(app PRIVATE
     src/behaviors/behavior_dfu_combo.c
     src/behaviors/behavior_kp_with_effect.c
     src/behaviors/behavior_bt_clear_bonds.c
+    src/behaviors/behavior_out_guard.c
 )
 
 target_include_directories(app PRIVATE include)

@@ -41,9 +41,12 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/drivers/led_strip.h>
 #include <zmk/events/position_state_changed.h>
+#include <zmk/hid.h>
+#include <zmk/endpoints.h>
 #include <zmk_rgbeffect/mode_c.h>
 #include <zmk_rgbeffect/effects.h>
 #include <zmk_rgbeffect/led_pixel.h>
+#include <zmk_rgbeffect/player.h>
 #include <zmk_rgbeffect/ble_service.h>
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
@@ -68,6 +71,8 @@ static uint32_t  app_ref_ms   = 0;
 static struct k_work_delayable step_work;    /* AUTO: the step's own clock */
 static struct k_work_delayable advance_work; /* post-HIT gap -> next step */
 static struct k_work_delayable restore_work; /* undo a flash */
+static struct k_work_delayable release_work; /* AUTO: lift the emitted HID keys */
+static uint16_t sent_mask = 0;               /* keys this engine holds down right now */
 
 static void mc_advance(void);
 
@@ -134,6 +139,79 @@ static void paint_mask(uint16_t mask, const struct led_rgb c) {
             led_pixel_set((uint8_t)i, c.r, c.g, c.b);
         }
     }
+}
+
+/* ---- auto pace: emit real keystrokes ----
+ *
+ * AUTO used to animate the strip and nothing else. The lights walked the score while the
+ * host received no input at all, so the mode read as dead. Its whole purpose is for the
+ * keyboard to PLAY the instrument in the game, and that means synthesising HID reports.
+ *
+ * One step is emitted as ONE report carrying every key of its mask: a chord has to arrive
+ * as a chord, or the game's note detector hears an arpeggio instead. The keys are lifted by
+ * a delayed work rather than a sleep, so the system workqueue - which also drives the LED
+ * effects - is never blocked.
+ *
+ * The usage IDs come from player.c via player_key_scancodes(): one copy, so the two
+ * playback paths can never disagree about which code is "Y".
+ *
+ * MANUAL never emits anything - there the human is the player.
+ *
+ * Every way out of playback (STOP, DONE, switching back to manual, a fresh START) lifts
+ * whatever this engine holds, so a key can never be left stuck down on the host. */
+#define MC_TAP_MIN_MS     50u   /* shortest hold the game still registers */
+#define MC_TAP_MAX_MS    200u   /* longest: keeps dense passages from smearing */
+#define MC_TAP_DEFAULT_MS 80u   /* used when a PUSH carries duration 0 */
+
+static void mc_hid_release_all(void) {
+    if (sent_mask == 0) {
+        return;
+    }
+    const uint8_t *sc = player_key_scancodes();
+    for (uint8_t k = 0; k < PLAYER_KEY_COUNT; k++) {
+        if (sent_mask & (uint16_t)(1u << k)) {
+            zmk_hid_keyboard_release(sc[k]);
+        }
+    }
+    zmk_endpoints_send_report(0x07);   /* HID keyboard usage page */
+    sent_mask = 0;
+}
+
+static void release_work_fn(struct k_work *work) {
+    ARG_UNUSED(work);
+    mc_hid_release_all();
+}
+
+static void mc_hid_tap(uint16_t mask, uint8_t duration_ms) {
+    /* Lift the previous step first: were a key from step N still down when step N+1's
+     * chord arrived, the host would see a chord that was never written. */
+    mc_hid_release_all();
+
+    const uint8_t *sc = player_key_scancodes();
+    uint16_t sent = 0;
+    for (uint8_t k = 0; k < PLAYER_KEY_COUNT; k++) {
+        if (mask & (uint16_t)(1u << k)) {
+            zmk_hid_keyboard_press(sc[k]);
+            sent |= (uint16_t)(1u << k);
+        }
+    }
+    if (sent == 0) {
+        return;
+    }
+    zmk_endpoints_send_report(0x07);
+
+    uint32_t hold = duration_ms ? duration_ms : MC_TAP_DEFAULT_MS;
+    if (hold < MC_TAP_MIN_MS) {
+        hold = MC_TAP_MIN_MS;
+    }
+    if (hold > MC_TAP_MAX_MS) {
+        hold = MC_TAP_MAX_MS;
+    }
+    sent_mask = sent;
+    /* reschedule, NOT schedule: k_work_schedule() refuses (-EALREADY) when the item is
+     * already queued and keeps the old deadline, so a step arriving before the previous
+     * release fired would have its own keys lifted early by that stale deadline. */
+    k_work_reschedule(&release_work, K_MSEC(hold));
 }
 
 /* ---- rendering ---- */
@@ -205,6 +283,10 @@ static void mc_arm_step(void) {
     render_step();
     mode_c_notify_event(MODE_C_EVT_STEP, chord_size(steps[cur_step].mask),
                         cur_step);
+    if (pace == MODE_C_PACE_AUTO) {
+        /* The keyboard is the player in this pace: sound the chord for real. */
+        mc_hid_tap(steps[cur_step].mask, steps[cur_step].duration);
+    }
     mc_arm_timer();
 }
 
@@ -222,6 +304,7 @@ static void mc_advance(void) {
     cur_step++;
     if (cur_step >= step_count) {
         state = MC_IDLE;
+        mc_hid_release_all();
         led_pixel_clear();
         led_pixel_update();
         effects_player_exit();   /* release the strip back to the user's effects */
@@ -278,6 +361,8 @@ void mode_c_start(uint16_t note_count) {
     k_work_cancel_delayable(&step_work);
     k_work_cancel_delayable(&advance_work);
     k_work_cancel_delayable(&restore_work);
+    k_work_cancel_delayable(&release_work);
+    mc_hid_release_all();     /* a fresh start must not inherit a held key */
     cur_step = 0;
     hit_mask = 0;
     pressed_mask = 0;
@@ -315,6 +400,8 @@ void mode_c_stop(void) {
     k_work_cancel_delayable(&step_work);
     k_work_cancel_delayable(&advance_work);
     k_work_cancel_delayable(&restore_work);
+    k_work_cancel_delayable(&release_work);
+    mc_hid_release_all();
     state = MC_IDLE;
     hit_mask = 0;
     pressed_mask = 0;
@@ -328,6 +415,12 @@ void mode_c_stop(void) {
 void mode_c_set_pace(uint8_t p) {
     pace = (p == MODE_C_PACE_AUTO) ? MODE_C_PACE_AUTO : MODE_C_PACE_MANUAL;
     LOG_INF("mode_c: pace -> %u", pace);
+    if (pace != MODE_C_PACE_AUTO) {
+        /* Handing control back to the human: lift anything the auto pace is holding
+         * first, or the first thing they hear is a stuck note. */
+        k_work_cancel_delayable(&release_work);
+        mc_hid_release_all();
+    }
     if (state == MC_RUNNING) {
         /* Re-arm the step on screen so the switch takes effect immediately and in
          * both directions: auto -> manual cancels the pending auto-advance and
@@ -372,6 +465,7 @@ int mode_c_init(void) {
     k_work_init_delayable(&step_work, step_work_fn);
     k_work_init_delayable(&advance_work, advance_work_fn);
     k_work_init_delayable(&restore_work, restore_work_fn);
+    k_work_init_delayable(&release_work, release_work_fn);
     state = MC_IDLE;
     step_count = 0;
     cur_step = 0;

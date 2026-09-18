@@ -324,7 +324,12 @@
             timeout-ms = <80>;
             require-prior-idle-ms = <200>;
             key-positions = <2 7>;
-            bindings = <&out OUT_TOG>;
+            /* NOT the stock &out OUT_TOG: that cannot be made inert during playback,
+             * and I and K are two of the keys a score legitimately asks for. Flipping
+             * the endpoint mid-song would drop the very link the notes travel over.
+             * The guard forwards to zmk_endpoints_toggle_transport() only when no
+             * score is running. */
+            bindings = <&out_guard>;
         };
     };
 
@@ -336,5 +341,6 @@
         dfu_combo:    rgb_dfu_combo         { compatible = "zmk,behavior-dfu-combo";       #binding-cells = <0>; };
         kp_we:        kp_with_effect        { compatible = "zmk,behavior-kp-with-effect";   #binding-cells = <2>; };
         bt_clear:     bt_clear_bonds        { compatible = "zmk,behavior-bt-clear-bonds"; #binding-cells = <0>; };
+        out_guard:    rgb_out_guard         { compatible = "zmk,behavior-out-guard";     #binding-cells = <0>; };
     };
 };

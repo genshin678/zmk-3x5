@@ -62,6 +62,7 @@
 #include <hal/nrf_power.h>
 #include <cmsis_core.h>
 #include <drivers/behavior.h>
+#include <zmk_rgbeffect/mode_c.h>
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
@@ -79,6 +80,12 @@ static void fire_dfu(struct k_work *w) {
 
 static int on_pressed(struct zmk_behavior_binding *binding,
                       struct zmk_behavior_binding_event event) {
+    /* Locked out while a score is playing: the strip and the cue belong to Mode C
+     * until the user stops. See behavior_effect_cycle.c for the full reasoning. */
+    if (mode_c_is_active()) {
+        return 0;
+    }
+
     ARG_UNUSED(binding);
     ARG_UNUSED(event);
     combo_held = true;

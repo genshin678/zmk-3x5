@@ -21,13 +21,16 @@
  *                     order; simultaneity is not required, only completeness, so a
  *                     rolled chord counts. A wrong key flashes red and reports MISS
  *                     but does not move the cursor.
- *   AUTO              The keyboard walks the score itself: each step is displayed
- *                     for its own `delta` and then advances. Physical presses are
- *                     not judged - this is the "read the lights first" mode.
+ *   AUTO              The keyboard PLAYS the score itself. Each step is shown for
+ *                     its own `delta`, and every key of that step's mask is emitted to
+ *                     the host as a real HID report, so the notes actually sound in the
+ *                     game - not just on the strip. Physical presses are not judged.
  *
  * BLE control commands (see ble_service.h):
  *   0x30 MODE_C_START  + u16 note_count
  *   0x31 MODE_C_PUSH   + u16 delta_ms, u16 key_mask, u8 duration_ms
+ *                      duration_ms is how long each emitted key is held down in AUTO
+ *                      pace; it is clamped to 50..200 ms and 0 means the 80 ms default.
  *   0x32 MODE_C_TICK   + u32 app_ms  (reference clock, informational)
  *   0x35 MODE_C_STOP   (aborts playback AND clears the step table)
  *   0x36 MODE_C_PACE   + u8 pace (0 = manual, 1 = auto)
@@ -72,8 +75,12 @@
 
 /* Capability flags reported in BE04 status byte 8 (see ble_service.c).
  *   bit0: wide delta - `delta` is not clamped to 1s on a HIT
- *   bit1: chord mask  - MODE_C_PUSH carries a u16 key mask, not a u8 single key */
-#define ZMK_RGB_PLAYER_FW_FLAGS 0x03u
+ *   bit1: chord mask  - MODE_C_PUSH carries a u16 key mask, not a u8 single key
+ *   bit2: auto plays  - AUTO pace emits real HID keystrokes, so a score actually
+ *                       sounds on the host. An App must NOT offer auto-play unless
+ *                       this bit is set: on an older build AUTO only animates the
+ *                       strip, which looks exactly like a broken feature. */
+#define ZMK_RGB_PLAYER_FW_FLAGS 0x07u
 
 /* Event opcodes sent on the BLE EVENTS characteristic. */
 #define MODE_C_EVT_HIT     0x01

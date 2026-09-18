@@ -52,6 +52,10 @@ static const uint8_t KEY_SCANCODE[15] = {
     0x38, /* / */
 };
 
+const uint8_t *player_key_scancodes(void) {
+    return KEY_SCANCODE;
+}
+
 typedef struct __attribute__((packed)) {
     uint32_t start_ms;
     uint16_t key_index;   /* 1..15 */

@@ -5,7 +5,7 @@
  *   BE01 Score Upload    WRITE (append chunks to staging buffer)
  *   BE02 Playback Ctrl  WRITE (PLAY/PAUSE/STOP/MODE/CLEAR/LOAD_DONE + Mode C)
  *   BE03 Live Keypress  WRITE (1..15, triggers ripple at that key)
- *   BE04 Status         READ+NOTIFY (state, mode, position_ms, step, fw_flags)
+ *   BE04 Status         READ+NOTIFY (state, mode, position_ms, step, fw_flags, diag)
  *   BE05 Events         NOTIFY (Mode C: HIT/MISS/DONE/STEP)
  */
 #include <zephyr/kernel.h>
@@ -24,7 +24,7 @@ LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 static uint8_t   staging[SCORE_STAGING_BYTES];
 static uint16_t  staging_len = 0;
 
-static uint8_t   status_buf[9];   /* bytes 0..7 status; byte 8 = fw_flags */
+static uint8_t   status_buf[13];  /* 0..7 status; 8 = fw_flags; 9..12 appended diag */
 static bool      status_notify_enabled;
 
 static uint8_t   events_buf[4];
@@ -69,6 +69,22 @@ static void status_rebuild(void) {
      *       layout must keep sending single keys until it sees this bit, because a
      *       6-byte PUSH would be misread by the old parser rather than rejected. */
     status_buf[8] = (uint8_t)ZMK_RGB_PLAYER_FW_FLAGS;
+    /* --- appended diagnostics (fw_flags bit3) ---
+     * Bytes 0..8 are FROZEN: the App reads byte 8 to decide which PUSH layout to send
+     * and which end of the protocol this board speaks, so anything new has to go AFTER
+     * it, never in front. A short read is already tolerated on the App side, which is
+     * what made appending legal in the first place.
+     *   [9..10] u16 LE  steps in the table the firmware is actually playing
+     *   [11]            pace (0 manual / 1 auto)
+     *   [12]            HID reports the link refused, saturating
+     * step_count is the field that settles "it stopped after two cells": if the table
+     * really held two steps the session ended with DONE, and if it held 990 then either
+     * the clock or the link died - the number says which without a reflash to find out. */
+    uint16_t fw_steps = mode_c_step_count();
+    status_buf[9]  = (uint8_t)(fw_steps & 0xFF);
+    status_buf[10] = (uint8_t)((fw_steps >> 8) & 0xFF);
+    status_buf[11] = mode_c_get_pace();
+    status_buf[12] = mode_c_hid_fail_total();
 }
 
 static void status_notify(void) {

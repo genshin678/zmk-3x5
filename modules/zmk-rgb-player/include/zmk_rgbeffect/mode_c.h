@@ -79,8 +79,12 @@
  *   bit2: auto plays  - AUTO pace emits real HID keystrokes, so a score actually
  *                       sounds on the host. An App must NOT offer auto-play unless
  *                       this bit is set: on an older build AUTO only animates the
- *                       strip, which looks exactly like a broken feature. */
-#define ZMK_RGB_PLAYER_FW_FLAGS 0x07u
+ *                       strip, which looks exactly like a broken feature.
+ *   bit3: diag fields - BE04 carries an APPENDED block after the frozen bytes 0..8:
+ *                       [9..10] u16 step table size, [11] pace, [12] refused HID
+ *                       reports. A 9-byte board leaves all three at 0, so reading
+ *                       them costs nothing but the App must not invent a table size. */
+#define ZMK_RGB_PLAYER_FW_FLAGS 0x0Fu
 
 /* Event opcodes sent on the BLE EVENTS characteristic. */
 #define MODE_C_EVT_HIT     0x01
@@ -88,6 +92,7 @@
 #define MODE_C_EVT_TIMEOUT 0x03   /* in the protocol, never emitted: see above */
 #define MODE_C_EVT_DONE    0x04
 #define MODE_C_EVT_STEP    0x05
+#define MODE_C_EVT_HID_FAIL 0x06  /* the link refused a HID report; one per outage */
 
 int  mode_c_init(void);
 void mode_c_start(uint16_t note_count);
@@ -106,6 +111,10 @@ void mode_c_on_position(uint32_t position, bool pressed);
 bool     mode_c_is_active(void);
 uint16_t mode_c_current_step(void);
 uint16_t mode_c_step_count(void);
+
+/* HID report delivery counters (BE04 diagnostics; see ble_service.c). */
+uint8_t mode_c_hid_fail_total(void);
+uint8_t mode_c_hid_fail_streak(void);
 
 /* Implemented in ble_service.c; emits a BE05 notification. */
 void mode_c_notify_event(uint8_t event, uint8_t key, uint16_t step);

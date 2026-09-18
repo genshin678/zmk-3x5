@@ -71,10 +71,16 @@ static uint32_t  app_ref_ms   = 0;
 static struct k_work_delayable step_work;    /* AUTO: the step's own clock */
 static struct k_work_delayable advance_work; /* post-HIT gap -> next step */
 static struct k_work_delayable restore_work; /* undo a flash */
-static struct k_work_delayable release_work; /* AUTO: lift the emitted HID keys */
-static uint16_t sent_mask = 0;               /* keys this engine holds down right now */
+static struct k_work_delayable release_work;    /* AUTO: lift the emitted HID keys */
+static struct k_work_delayable hid_retry_work;   /* re-send a report the link refused */
+static uint16_t sent_mask = 0;               /* keys the HOST was last TOLD are down */
+static uint16_t want_mask = 0;               /* keys the host should be holding now */
+static uint8_t  hid_fail_streak = 0;         /* consecutive undeliverable reports */
+static uint8_t  hid_fail_total  = 0;         /* saturating, for the BE04 diag field */
+static bool     hid_warned = false;          /* one HID_FAIL event per outage */
 
 static void mc_advance(void);
+static void mc_hid_flush(void);
 
 /* Cue colors (led_rgb is r,g,b; the ST-1209RGB G,R,B wire order is handled by the
  * driver, which is where that measurement belongs). */
@@ -96,7 +102,7 @@ static const struct led_rgb CUE_GREEN = { .r = 0,   .g = 255, .b = 0   };
  * attempt at this did. A volatile pointer forces a real load, hence a relocation, hence
  * a section the linker has to keep; __attribute__((used)) is belt and braces. */
 static const uint8_t mc_build_tag[] __attribute__((used)) =
-    "MCV4/AUTO-CLOCK-FIX+COMBO-LOCK";
+    "MCV5/HID-RETRY+DIAG";
 static const uint8_t *volatile mc_build_tag_probe = mc_build_tag;
 static volatile uint8_t mc_build_tag_sink;
 
@@ -163,18 +169,105 @@ static void paint_mask(uint16_t mask, const struct led_rgb c) {
 #define MC_TAP_MAX_MS    200u   /* longest: keeps dense passages from smearing */
 #define MC_TAP_DEFAULT_MS 80u   /* used when a PUSH carries duration 0 */
 
-static void mc_hid_release_all(void) {
-    if (sent_mask == 0) {
-        return;
-    }
+/* A report the link refuses is retried this many times, this far apart. Both are
+ * tuned against the shortest step the firmware will ever arm (MODE_C_AUTO_MIN_MS =
+ * 60 ms): the whole retry budget has to fit inside one step, or a late retry would
+ * fight the next chord. */
+#define MC_HID_RETRY_MAX 8u
+#define MC_HID_RETRY_MS  5u
+
+/* Apply the difference between what the host should be holding and what it was last
+ * successfully told, on the global ZMK keyboard report. Only the DIFF is touched: a
+ * press on a key that is already in the report would take a second slot of the
+ * 6-key report, and four chords later the report is full and presses start failing. */
+static void mc_hid_apply(uint16_t want) {
     const uint8_t *sc = player_key_scancodes();
     for (uint8_t k = 0; k < PLAYER_KEY_COUNT; k++) {
-        if (sent_mask & (uint16_t)(1u << k)) {
+        uint16_t bit = (uint16_t)(1u << k);
+        if ((want & bit) == (sent_mask & bit)) {
+            continue;
+        }
+        if (want & bit) {
+            zmk_hid_keyboard_press(sc[k]);
+        } else {
             zmk_hid_keyboard_release(sc[k]);
         }
     }
-    zmk_endpoints_send_report(0x07);   /* HID keyboard usage page */
-    sent_mask = 0;
+}
+
+/* ---- HID report delivery ----
+ *
+ * zmk_endpoints_send_report() is NOT fire-and-forget: it returns a negative errno when
+ * the report never left the board.
+ *   -ENODEV  the selected endpoint is not ready (USB not enumerated or suspended, the
+ *            bonded BLE peer not connected)
+ *   -EBUSY   the endpoint was still busy with the previous report, so THIS one was
+ *            thrown away (ZMK's USB path writes with K_NO_WAIT behind a 30 ms semaphore
+ *            take whose result it ignores)
+ * There is no retry queue behind it. A dropped report is gone.
+ *
+ * That matters more here than anywhere else in ZMK, because a HID report is STATE, not
+ * a delta: the host displays whatever the last report that actually ARRIVED said. So
+ * losing the release report does not lose a note - it leaves the whole chord held down
+ * on the host, forever, because sent_mask used to be zeroed regardless of whether the
+ * report went out. This engine then believed the keys were already up and never sent
+ * another release. In a music game the symptom is "the keyboard froze": the instrument
+ * keeps holding the note and every later chord is heard as an extension of that hold,
+ * so the score stops advancing while the strip keeps walking.
+ *
+ * So sent_mask only ever records what the host was TOLD, and a failed report is
+ * retried. A retry re-sends the report WITHOUT re-applying the key diff (see
+ * mc_hid_apply): the report is already the state we want, it just never arrived.
+ *
+ * The failure is also surfaced - a saturating total in BE04 plus a one-shot HID_FAIL
+ * event - because with CONFIG_LOG=n "nothing happened" is not a diagnosis. */
+static void mc_hid_retry_fn(struct k_work *work) {
+    ARG_UNUSED(work);
+    mc_hid_flush();
+}
+
+/* Push the state this engine currently wants out to the host, retrying on failure. */
+static void mc_hid_flush(void) {
+    int err = zmk_endpoints_send_report(0x07);   /* HID keyboard usage page */
+    if (err == 0) {
+        sent_mask = want_mask;
+        hid_fail_streak = 0;
+        hid_warned = false;
+        return;
+    }
+    hid_fail_streak++;
+    if (hid_fail_total < 0xFFu) {
+        hid_fail_total++;
+    }
+    if (!hid_warned) {
+        /* One event per outage, not one per report: the App shows this verbatim, and
+         * 990 identical lines would be noise. */
+        hid_warned = true;
+        mode_c_notify_event(MODE_C_EVT_HID_FAIL, hid_fail_streak, hid_fail_total);
+    }
+    if (hid_fail_streak <= MC_HID_RETRY_MAX) {
+        /* reschedule, NOT schedule: this runs from hid_retry_work's own handler on a
+         * retry, and k_work_schedule() would refuse (-EALREADY) and keep the stale
+         * deadline. Same reason step_work is re-armed this way - see mc_arm_timer(). */
+        k_work_reschedule(&hid_retry_work, K_MSEC(MC_HID_RETRY_MS));
+    }
+}
+
+/* Set the state the host should hold and push it out. */
+static void mc_hid_set(uint16_t want) {
+    want_mask = want;
+    mc_hid_apply(want);
+    mc_hid_flush();
+}
+
+/* Lift everything this engine holds. A FAILED release deliberately leaves sent_mask
+ * set, so the next flush - or the retry work, or STOP - still knows the host is
+ * holding keys and can undo it. */
+static void mc_hid_release_all(void) {
+    if (want_mask == 0 && sent_mask == 0) {
+        return;
+    }
+    mc_hid_set(0);
 }
 
 static void release_work_fn(struct k_work *work) {
@@ -187,18 +280,15 @@ static void mc_hid_tap(uint16_t mask, uint8_t duration_ms) {
      * chord arrived, the host would see a chord that was never written. */
     mc_hid_release_all();
 
-    const uint8_t *sc = player_key_scancodes();
     uint16_t sent = 0;
     for (uint8_t k = 0; k < PLAYER_KEY_COUNT; k++) {
         if (mask & (uint16_t)(1u << k)) {
-            zmk_hid_keyboard_press(sc[k]);
             sent |= (uint16_t)(1u << k);
         }
     }
     if (sent == 0) {
         return;
     }
-    zmk_endpoints_send_report(0x07);
 
     uint32_t hold = duration_ms ? duration_ms : MC_TAP_DEFAULT_MS;
     if (hold < MC_TAP_MIN_MS) {
@@ -207,11 +297,11 @@ static void mc_hid_tap(uint16_t mask, uint8_t duration_ms) {
     if (hold > MC_TAP_MAX_MS) {
         hold = MC_TAP_MAX_MS;
     }
-    sent_mask = sent;
-    /* reschedule, NOT schedule: k_work_schedule() refuses (-EALREADY) when the item is
-     * already queued and keeps the old deadline, so a step arriving before the previous
-     * release fired would have its own keys lifted early by that stale deadline. */
+    /* Arm the release BEFORE the press report. If the press needs its retry budget the
+     * release still happens on schedule, and a chord can never stick because its own
+     * press was the slow part. */
     k_work_reschedule(&release_work, K_MSEC(hold));
+    mc_hid_set(sent);
 }
 
 /* ---- rendering ---- */
@@ -384,6 +474,7 @@ void mode_c_start(uint16_t note_count) {
     k_work_cancel_delayable(&advance_work);
     k_work_cancel_delayable(&restore_work);
     k_work_cancel_delayable(&release_work);
+    hid_warned = false;       /* a fresh run reports its own failures */
     mc_hid_release_all();     /* a fresh start must not inherit a held key */
     cur_step = 0;
     hit_mask = 0;
@@ -423,6 +514,10 @@ void mode_c_stop(void) {
     k_work_cancel_delayable(&advance_work);
     k_work_cancel_delayable(&restore_work);
     k_work_cancel_delayable(&release_work);
+    /* Deliberately NOT cancelling hid_retry_work: if the release below does not get
+     * through, that work is the only thing left that will ever lift the chord off the
+     * host, and a stuck chord is indistinguishable from a frozen keyboard. */
+    hid_warned = false;
     mc_hid_release_all();
     state = MC_IDLE;
     hit_mask = 0;
@@ -468,6 +563,17 @@ uint16_t mode_c_step_count(void) {
     return step_count;
 }
 
+/* HID delivery counters, mirrored into BE04 so the App can show them. Without this an
+ * undeliverable report is invisible: the strip walks the score while the host receives
+ * nothing at all, which reads as "the keyboard froze". */
+uint8_t mode_c_hid_fail_total(void) {
+    return hid_fail_total;
+}
+
+uint8_t mode_c_hid_fail_streak(void) {
+    return hid_fail_streak;
+}
+
 /* ---- init + ZMK position listener ---- */
 
 static int mode_c_position_listener(const zmk_event_t *eh) {
@@ -488,6 +594,7 @@ int mode_c_init(void) {
     k_work_init_delayable(&advance_work, advance_work_fn);
     k_work_init_delayable(&restore_work, restore_work_fn);
     k_work_init_delayable(&release_work, release_work_fn);
+    k_work_init_delayable(&hid_retry_work, mc_hid_retry_fn);
     state = MC_IDLE;
     step_count = 0;
     cur_step = 0;

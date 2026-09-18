@@ -43,6 +43,9 @@
 #include <zmk/events/position_state_changed.h>
 #include <zmk/hid.h>
 #include <zmk/endpoints.h>
+#if IS_ENABLED(CONFIG_ZMK_USB)
+#include <zmk/usb.h>
+#endif
 #include <zmk_rgbeffect/mode_c.h>
 #include <zmk_rgbeffect/effects.h>
 #include <zmk_rgbeffect/led_pixel.h>
@@ -102,7 +105,7 @@ static const struct led_rgb CUE_GREEN = { .r = 0,   .g = 255, .b = 0   };
  * attempt at this did. A volatile pointer forces a real load, hence a relocation, hence
  * a section the linker has to keep; __attribute__((used)) is belt and braces. */
 static const uint8_t mc_build_tag[] __attribute__((used)) =
-    "MCV5/HID-RETRY+DIAG";
+    "MCV6/LINK+DIAG";
 static const uint8_t *volatile mc_build_tag_probe = mc_build_tag;
 static volatile uint8_t mc_build_tag_sink;
 
@@ -566,6 +569,41 @@ uint16_t mode_c_step_count(void) {
 /* HID delivery counters, mirrored into BE04 so the App can show them. Without this an
  * undeliverable report is invisible: the strip walks the score while the host receives
  * nothing at all, which reads as "the keyboard froze". */
+/* ---- link diagnostics (BE04 byte 13/14, fw_flags bit4) ----
+ *
+ * ZMK v0.3 numbers enum zmk_transport as {USB=0, BLE=1}, while ZMK main uses
+ * {NONE=0, USB=1, BLE=2}. Our wire values are therefore defined here and the
+ * comparison is done on the SYMBOLS, so a ZMK upgrade that renumbers the enum
+ * cannot silently turn USB into BLE on the App's screen.
+ */
+uint8_t mode_c_link_endpoint(void) {
+    struct zmk_endpoint_instance ep = zmk_endpoints_selected();
+    if (ep.transport == ZMK_TRANSPORT_USB) {
+        return 1;
+    }
+    if (ep.transport == ZMK_TRANSPORT_BLE) {
+        return 2;
+    }
+    return 0;
+}
+
+uint8_t mode_c_link_usb_state(void) {
+#if IS_ENABLED(CONFIG_ZMK_USB)
+    switch (zmk_usb_get_conn_state()) {
+    case ZMK_USB_CONN_NONE:
+        return 0;   /* nothing on the connector */
+    case ZMK_USB_CONN_POWERED:
+        return 1;   /* charging, but NOT enumerated as a keyboard */
+    case ZMK_USB_CONN_HID:
+        return 2;   /* enumerated: reports can go out over the wire */
+    default:
+        return 0xFF;
+    }
+#else
+    return 0xFF;    /* no USB support in this image */
+#endif
+}
+
 uint8_t mode_c_hid_fail_total(void) {
     return hid_fail_total;
 }

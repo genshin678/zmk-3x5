@@ -5,7 +5,7 @@
  *   BE01 Score Upload    WRITE (append chunks to staging buffer)
  *   BE02 Playback Ctrl  WRITE (PLAY/PAUSE/STOP/MODE/CLEAR/LOAD_DONE + Mode C)
  *   BE03 Live Keypress  WRITE (1..15, triggers ripple at that key)
- *   BE04 Status         READ+NOTIFY (state, mode, position_ms, step, fw_flags, diag)
+ *   BE04 Status         READ+NOTIFY (state, mode, position_ms, step, fw_flags, diag, link)
  *   BE05 Events         NOTIFY (Mode C: HIT/MISS/DONE/STEP)
  */
 #include <zephyr/kernel.h>
@@ -24,7 +24,7 @@ LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 static uint8_t   staging[SCORE_STAGING_BYTES];
 static uint16_t  staging_len = 0;
 
-static uint8_t   status_buf[13];  /* 0..7 status; 8 = fw_flags; 9..12 appended diag */
+static uint8_t   status_buf[15];  /* 0..7 status; 8 = fw_flags; 9..14 appended diag */
 static bool      status_notify_enabled;
 
 static uint8_t   events_buf[4];
@@ -85,6 +85,16 @@ static void status_rebuild(void) {
     status_buf[10] = (uint8_t)((fw_steps >> 8) & 0xFF);
     status_buf[11] = mode_c_get_pace();
     status_buf[12] = mode_c_hid_fail_total();
+
+    /* --- link diagnostics (fw_flags bit4) ---
+     *   [13] transport in use        (0 unset / 1 USB / 2 BLE)
+     *   [14] USB connection state    (0 none / 1 powered only / 2 HID / 0xFF n/a)
+     * Read live rather than cached: the whole point is to catch the case where
+     * the board is plugged in, drawing power, and therefore NOT sending over
+     * Bluetooth, while the cable never enumerates as a keyboard - the keys then
+     * have nowhere to go and the host's music game simply stops advancing. */
+    status_buf[13] = mode_c_link_endpoint();
+    status_buf[14] = mode_c_link_usb_state();
 }
 
 static void status_notify(void) {

@@ -83,8 +83,20 @@
  *   bit3: diag fields - BE04 carries an APPENDED block after the frozen bytes 0..8:
  *                       [9..10] u16 step table size, [11] pace, [12] refused HID
  *                       reports. A 9-byte board leaves all three at 0, so reading
- *                       them costs nothing but the App must not invent a table size. */
-#define ZMK_RGB_PLAYER_FW_FLAGS 0x0Fu
+ *                       them costs nothing but the App must not invent a table size.
+ *   bit4: link diag  - BE04 also carries, after the bit3 block:
+ *                       [13] the transport the firmware is actually sending on
+ *                            (1 USB / 2 BLE / 0 nothing selected)
+ *                       [14] the USB connection state
+ *                            (0 not connected / 1 powered only / 2 HID enumerated
+ *                             / 0xFF USB not compiled into this image)
+ *                       These two answer "the game froze while I was plugged in":
+ *                       [13]==1 means the keys are going down the wire, and
+ *                       [14]==1 means the cable is charging the board without
+ *                       ever enumerating as a keyboard, so no keystroke can
+ *                       reach the host no matter what the engine does.
+ */
+#define ZMK_RGB_PLAYER_FW_FLAGS 0x1Fu
 
 /* Event opcodes sent on the BLE EVENTS characteristic. */
 #define MODE_C_EVT_HIT     0x01
@@ -115,6 +127,11 @@ uint16_t mode_c_step_count(void);
 /* HID report delivery counters (BE04 diagnostics; see ble_service.c). */
 uint8_t mode_c_hid_fail_total(void);
 uint8_t mode_c_hid_fail_streak(void);
+
+/* Which transport is carrying keystrokes, and how far the USB link got.
+ * Wire values are ours, not ZMK's - see the note in mode_c.c. */
+uint8_t mode_c_link_endpoint(void);   /* 0 unset / 1 USB / 2 BLE */
+uint8_t mode_c_link_usb_state(void);  /* 0 none / 1 powered / 2 HID / 0xFF n/a */
 
 /* Implemented in ble_service.c; emits a BE05 notification. */
 void mode_c_notify_event(uint8_t event, uint8_t key, uint16_t step);

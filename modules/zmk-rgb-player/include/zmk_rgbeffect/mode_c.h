@@ -66,7 +66,10 @@
 #define MODE_C_DELTA_MAX_MS 65000
 
 /* Floor on the post-HIT gap, in manual pace: short enough not to distort the tempo,
- * long enough for the 140 ms green flash to actually read as a confirmation. */
+ * long enough for the 140 ms green flash to actually read as a confirmation.
+ * SUPERSEDED in MCV7: manual pace now advances after a fixed 60 ms blip regardless
+ * of delta (the user sets the tempo), so this floor no longer gates anything. Kept
+ * defined so old readers of the header still build. */
 #define MODE_C_HIT_GAP_MIN_MS 140u
 
 /* Floor on a step's own length in auto pace. A dense passage can legitimately ask
@@ -95,8 +98,14 @@
  *                       [14]==1 means the cable is charging the board without
  *                       ever enumerating as a keyboard, so no keystroke can
  *                       reach the host no matter what the engine does.
+ *   bit5: fast manual - MANUAL pace advances the cue after a fixed ~60 ms blip
+ *                       (never the score's delta), next-step keys pressed inside
+ *                       the gap are latched, and the combo engine stands down for
+ *                       the whole session (no captured/swallowed chords). An App
+ *                       can tell a pre-MCV7 board by this bit being clear and can
+ *                       then warn that fast passages will feel gated.
  */
-#define ZMK_RGB_PLAYER_FW_FLAGS 0x1Fu
+#define ZMK_RGB_PLAYER_FW_FLAGS 0x3Fu
 
 /* Event opcodes sent on the BLE EVENTS characteristic. */
 #define MODE_C_EVT_HIT     0x01

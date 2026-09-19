@@ -69,6 +69,7 @@ static mc_state_t state     = MC_IDLE;
 static uint8_t   pace       = MODE_C_PACE_MANUAL;
 static uint16_t  pressed_mask = 0; /* keys physically down right now */
 static uint16_t  hit_mask     = 0; /* keys of the current step already satisfied */
+static uint16_t  prehit_mask  = 0; /* NEXT step's keys already struck during the gap */
 static uint32_t  app_ref_ms   = 0;
 
 static struct k_work_delayable step_work;    /* AUTO: the step's own clock */
@@ -84,6 +85,41 @@ static bool     hid_warned = false;          /* one HID_FAIL event per outage */
 
 static void mc_advance(void);
 static void mc_hid_flush(void);
+
+/* ---- combo keepalive: make the ZMK combo engine stand down mid-song ----
+ *
+ * The six chords (Y+P, H+;, Y+N, P+N, O+., I+K) live in the keymap's `combos {}`
+ * block, i.e. in ZMK's CORE combo engine (app/src/combo.c) - not in the behaviors
+ * this module owns. The engine CAPTURES a member key's position event the moment it
+ * can be part of a combo, and a captured key never types. The behavior-level
+ * `mode_c_is_active()` guards added earlier only stop the combo's ACTION; the capture
+ * happens two layers below them, so mid-song chords that happen to pair up
+ * (a score legitimately asks for Y and P together) were swallowed: the strip flashed
+ * green, the game heard nothing.
+ *
+ * The engine's own escape hatch is require-prior-idle-ms (200 on every combo here):
+ * a combo only becomes a candidate if no non-modifier keycode was emitted within the
+ * last 200 ms (combo.c: is_quick_tap() against last_tapped_timestamp). During a
+ * guided run the cues - not a typing rhythm - decide when the user presses, so any
+ * gap of a bar or a rest re-arms the combos and the very next chord gets eaten.
+ *
+ * last_tapped_timestamp is a non-static global in v0.3's combo.c, so rather than
+ * inject synthetic key traffic we simply keep it fresh: a small work item re-stamps
+ * it every MC_COMBO_KEEPALIVE_MS while a session is active. Candidates are then
+ * never set up, member keys type instantly with zero added latency, and the
+ * behavior-level guards stay as a second belt. Stopping the session (or finishing
+ * the score) stops the keepalive, and 200 ms later the combos work normally again. */
+extern int64_t last_tapped_timestamp;   /* combo.c (zmk v0.3), non-static on purpose */
+#define MC_COMBO_KEEPALIVE_MS 100u
+static struct k_work_delayable keepalive_work;
+static void keepalive_work_fn(struct k_work *work) {
+    ARG_UNUSED(work);
+    if (!mode_c_is_active()) {
+        return;   /* session over: let the combos re-arm naturally (>= 200 ms idle) */
+    }
+    last_tapped_timestamp = (int64_t)k_uptime_get();
+    k_work_reschedule(&keepalive_work, K_MSEC(MC_COMBO_KEEPALIVE_MS));
+}
 
 /* Cue colors (led_rgb is r,g,b; the ST-1209RGB G,R,B wire order is handled by the
  * driver, which is where that measurement belongs). */
@@ -105,7 +141,7 @@ static const struct led_rgb CUE_GREEN = { .r = 0,   .g = 255, .b = 0   };
  * attempt at this did. A volatile pointer forces a real load, hence a relocation, hence
  * a section the linker has to keep; __attribute__((used)) is belt and braces. */
 static const uint8_t mc_build_tag[] __attribute__((used)) =
-    "MCV6/LINK+DIAG";
+    "MCV7/FASTCUE";
 static const uint8_t *volatile mc_build_tag_probe = mc_build_tag;
 static volatile uint8_t mc_build_tag_sink;
 
@@ -394,7 +430,11 @@ static void mc_arm_timer(void) {
 
 static void mc_arm_step(void) {
     state = MC_RUNNING;
-    hit_mask = (uint16_t)(pressed_mask & steps[cur_step].mask);
+    /* Keys struck during the previous post-HIT gap count here: a fast player rolls
+     * straight through the green blip, and a press+release that both landed inside it
+     * are already gone from pressed_mask by the time the next step arms. */
+    hit_mask = (uint16_t)((pressed_mask | prehit_mask) & steps[cur_step].mask);
+    prehit_mask = 0;
     render_step();
     mode_c_notify_event(MODE_C_EVT_STEP, chord_size(steps[cur_step].mask),
                         cur_step);
@@ -405,14 +445,30 @@ static void mc_arm_step(void) {
     mc_arm_timer();
 }
 
+/* MANUAL cue pacing: the USER sets the tempo, so the score's own inter-step delta
+ * must never gate when the next cue appears. The old behaviour scheduled the advance
+ * at clamp(delta, MODE_C_HIT_GAP_MIN_MS) - i.e. a whole beat of the score (480 ms on
+ * the Call of Silence transcription) after every hit, plus a 140 ms flash on top of
+ * that. A player who reads ahead and hits early then sat staring at a stale cue, and
+ * every such wait also re-armed the combo engine (see the keepalive note above),
+ * which ate the very chord they pressed next. 60 ms is one green blip - enough to
+ * read as "hit confirmed", gone before the next cue is needed. */
+#define MC_MANUAL_ADVANCE_MS 60u
+#define MC_MANUAL_FLASH_MS   50u
+
 static void mc_step_hit(void) {
     uint16_t want = steps[cur_step].mask;
     mode_c_notify_event(MODE_C_EVT_HIT, lowest_key(want), cur_step);
-    flash_mask(want, CUE_GREEN, 140);
+    flash_mask(want, CUE_GREEN, MC_MANUAL_FLASH_MS);
     k_work_cancel_delayable(&step_work);
     state = MC_ADVANCING;
-    k_work_schedule(&advance_work,
-                    K_MSEC(clamp_delta(steps[cur_step].delta, MODE_C_HIT_GAP_MIN_MS)));
+    /* Fixed micro-gap, NOT the score's delta: in manual pace delta is metadata about
+     * the song, not a delay anyone should ever feel. (AUTO never comes through here -
+     * it advances from step_work - so a pace check is unnecessary.) */
+    /* reschedule, not schedule: this file's own doctrine - a stale pending deadline
+     * must never survive a new request (k_work_schedule no-ops on an already-queued
+     * item and keeps the OLD deadline). */
+    k_work_reschedule(&advance_work, K_MSEC(MC_MANUAL_ADVANCE_MS));
 }
 
 static void mc_advance(void) {
@@ -444,7 +500,18 @@ void mode_c_on_position(uint32_t position, bool pressed) {
         pressed_mask &= (uint16_t)~bit;
     }
 
-    if (state != MC_RUNNING) return;
+    if (state != MC_RUNNING) {
+        /* Mid-gap (MC_ADVANCING): a press on the NEXT step's key is not lost even if
+         * it went down and up inside the gap - latch it. Wrong keys just bookkeep;
+         * no MISS flash while the engine is between steps, the user cannot yet be
+         * "wrong" about a cue that is not on screen. */
+        if (state == MC_ADVANCING && pressed && pace == MODE_C_PACE_MANUAL &&
+            cur_step + 1 < step_count &&
+            (bit & steps[cur_step + 1].mask) != 0u) {
+            prehit_mask |= bit;
+        }
+        return;
+    }
     if (!pressed) return;
     if (pace != MODE_C_PACE_MANUAL) return;   /* auto: lights only, no judging */
 
@@ -481,7 +548,12 @@ void mode_c_start(uint16_t note_count) {
     mc_hid_release_all();     /* a fresh start must not inherit a held key */
     cur_step = 0;
     hit_mask = 0;
+    prehit_mask = 0;
     pressed_mask = 0;
+    /* Stamp immediately (the first chord often follows a long pause) and let the
+     * work keep stamping while the session lives. */
+    last_tapped_timestamp = (int64_t)k_uptime_get();
+    k_work_reschedule(&keepalive_work, K_MSEC(MC_COMBO_KEEPALIVE_MS));
     effects_player_enter();   /* claim the LED strip, stop the effect tick */
     LOG_INF("mode_c_start: %u steps (requested %u), pace %u", step_count, note_count, pace);
     mc_arm_step();
@@ -517,6 +589,7 @@ void mode_c_stop(void) {
     k_work_cancel_delayable(&advance_work);
     k_work_cancel_delayable(&restore_work);
     k_work_cancel_delayable(&release_work);
+    k_work_cancel_delayable(&keepalive_work);   /* combos go back to work ≥200 ms later */
     /* Deliberately NOT cancelling hid_retry_work: if the release below does not get
      * through, that work is the only thing left that will ever lift the chord off the
      * host, and a stuck chord is indistinguishable from a frozen keyboard. */
@@ -524,6 +597,7 @@ void mode_c_stop(void) {
     mc_hid_release_all();
     state = MC_IDLE;
     hit_mask = 0;
+    prehit_mask = 0;
     pressed_mask = 0;
     step_count = 0;   /* the table is per-session; the App always PUSHes again */
     led_pixel_clear();
@@ -633,6 +707,7 @@ int mode_c_init(void) {
     k_work_init_delayable(&restore_work, restore_work_fn);
     k_work_init_delayable(&release_work, release_work_fn);
     k_work_init_delayable(&hid_retry_work, mc_hid_retry_fn);
+    k_work_init_delayable(&keepalive_work, keepalive_work_fn);
     state = MC_IDLE;
     step_count = 0;
     cur_step = 0;

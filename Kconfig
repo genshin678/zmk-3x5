@@ -1,19 +1,37 @@
-config ZMK_RGBEFFECT
-    bool "ZMK RGB Player custom module"
+# SPDX-License-Identifier: MIT
+# zmk-rgb-player module Kconfig
+#
+# module.yml references this file (kconfig: Kconfig). Without it the symbols
+# used by the module's sources (LOG_LEVEL, DEFAULT_EFFECT, BRINGUP) are never
+# declared, which makes any assignment in zmk_3x5_bt.conf an "undefined symbol"
+# warning and breaks compilation of every LOG_MODULE_DECLARE call.
+
+config ZMK_RGB_PLAYER
+    bool "Enable the zmk-rgb-player module"
     default y
     help
-      Enables the zmk-rgb-player module: per-pixel LED control, RGB
-      effects, score playback engine, custom BLE GATT service, USB
-      CDC debug console, and DFU trigger.
-
-if ZMK_RGBEFFECT
+      Master switch for the zmk-rgb-player module. The module's sources are
+      always compiled by CMakeLists.txt; this symbol gates the module's
+      Kconfig options and is the one referenced from zmk_3x5_bt.conf.
 
 config ZMK_RGB_PLAYER_LOG_LEVEL
-    int "ZMK RGB Player log level"
-    default 4
-    range 0 4
+    int "zmk-rgb-player log level"
+    default 3
     help
-      Log level for the zmk-rgb-player module. 0=off, 1=err, 2=wrn,
-      3=inf, 4=dbg. Used by LOG_MODULE_DECLARE/REGISTER macros.
+      Log level for the zmk-rgb-player module (0=off .. 4=debug).
 
-endif # ZMK_RGBEFFECT
+config ZMK_RGB_PLAYER_DEFAULT_EFFECT
+    int "Default LED effect applied at boot"
+    range 0 6
+    default 0
+    help
+      Effect index selected by module_init when not in bringup mode.
+      0=OFF, 1=SOLID, 2=BREATHING, 3=RAINBOW, 4=SINGLE_KEY,
+      5=TWINKLE, 6=RIPPLE (see rgb_effect_t in effects.h).
+
+config ZMK_RGB_PLAYER_BRINGUP
+    bool "Enable bringup diagnostic threads"
+    default n
+    help
+      Compiles in hardware-bringup diagnostic threads. Leave off for
+      production builds; the bringup code paths self-disable when this is n.

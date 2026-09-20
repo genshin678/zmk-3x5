@@ -5,8 +5,8 @@
  *   BE01 Score Upload    WRITE (append chunks to staging buffer)
  *   BE02 Playback Ctrl  WRITE (PLAY/PAUSE/STOP/MODE/CLEAR/LOAD_DONE + Mode C)
  *   BE03 Live Keypress  WRITE (1..15, triggers ripple at that key)
- *   BE04 Status         READ+NOTIFY (state, mode, position_ms, step)
- *   BE05 Events         NOTIFY (Mode C: HIT/MISS/TIMEOUT/DONE)
+ *   BE04 Status         READ+NOTIFY (state, mode, position_ms, step, fw_flags, diag, link)
+ *   BE05 Events         NOTIFY (Mode C: HIT/MISS/DONE/STEP)
  */
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -17,6 +17,7 @@
 #include <zmk_rgbeffect/player.h>
 #include <zmk_rgbeffect/effects.h>
 #include <zmk_rgbeffect/mode_c.h>
+#include <zmk_rgbeffect/user_keymap.h>
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
@@ -24,7 +25,7 @@ LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 static uint8_t   staging[SCORE_STAGING_BYTES];
 static uint16_t  staging_len = 0;
 
-static uint8_t   status_buf[8];
+static uint8_t   status_buf[15];  /* 0..7 status; 8 = fw_flags; 9..14 appended diag */
 static bool      status_notify_enabled;
 
 static uint8_t   events_buf[4];
@@ -62,6 +63,39 @@ static void status_rebuild(void) {
     memcpy(&status_buf[2], &pos, 4);
     uint16_t step = mode_c_is_active() ? mode_c_current_step() : 0;
     memcpy(&status_buf[6], &step, 2);
+    /* Capability flags so the App can negotiate features without a version query.
+     * bit0: wide delta (delta not clamped to 1s on a HIT).
+     * bit1: chord mask - MODE_C_PUSH takes a u16 key mask instead of a u8 key, so
+     *       one step is one chord/one sheet cell. An App that only knows the 5-byte
+     *       layout must keep sending single keys until it sees this bit, because a
+     *       6-byte PUSH would be misread by the old parser rather than rejected. */
+    status_buf[8] = (uint8_t)ZMK_RGB_PLAYER_FW_FLAGS;
+    /* --- appended diagnostics (fw_flags bit3) ---
+     * Bytes 0..8 are FROZEN: the App reads byte 8 to decide which PUSH layout to send
+     * and which end of the protocol this board speaks, so anything new has to go AFTER
+     * it, never in front. A short read is already tolerated on the App side, which is
+     * what made appending legal in the first place.
+     *   [9..10] u16 LE  steps in the table the firmware is actually playing
+     *   [11]            pace (0 manual / 1 auto)
+     *   [12]            HID reports the link refused, saturating
+     * step_count is the field that settles "it stopped after two cells": if the table
+     * really held two steps the session ended with DONE, and if it held 990 then either
+     * the clock or the link died - the number says which without a reflash to find out. */
+    uint16_t fw_steps = mode_c_step_count();
+    status_buf[9]  = (uint8_t)(fw_steps & 0xFF);
+    status_buf[10] = (uint8_t)((fw_steps >> 8) & 0xFF);
+    status_buf[11] = mode_c_get_pace();
+    status_buf[12] = mode_c_hid_fail_total();
+
+    /* --- link diagnostics (fw_flags bit4) ---
+     *   [13] transport in use        (0 unset / 1 USB / 2 BLE)
+     *   [14] USB connection state    (0 none / 1 powered only / 2 HID / 0xFF n/a)
+     * Read live rather than cached: the whole point is to catch the case where
+     * the board is plugged in, drawing power, and therefore NOT sending over
+     * Bluetooth, while the cable never enumerates as a keyboard - the keys then
+     * have nowhere to go and the host's music game simply stops advancing. */
+    status_buf[13] = mode_c_link_endpoint();
+    status_buf[14] = mode_c_link_usb_state();
 }
 
 static void status_notify(void) {
@@ -113,8 +147,15 @@ static ssize_t on_control_write(struct bt_conn *conn,
             mode_c_start((uint16_t)(p[1] | (p[2] << 8)));
             break;
         case MODE_C_PUSH:
-            if (len < 5) return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
-            mode_c_push((uint16_t)(p[1] | (p[2] << 8)), p[3], p[4]);
+            /* 6 bytes: u16 delta_ms, u16 key_mask, u8 duration_ms. The mask, not a
+             * single key - see ble_service.h. A 5-byte write here is an App built
+             * against the old single-key layout and must be rejected rather than
+             * reinterpreted: p[3]/p[4] would be read as a mask built from the key
+             * byte and the duration, which would light a wrong chord silently. */
+            if (len < 6) return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+            mode_c_push((uint16_t)(p[1] | (p[2] << 8)),
+                        (uint16_t)(p[3] | (p[4] << 8)),
+                        p[5]);
             break;
         case MODE_C_TICK:
             if (len < 5) return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
@@ -124,6 +165,22 @@ static ssize_t on_control_write(struct bt_conn *conn,
             break;
         case MODE_C_STOP:
             mode_c_stop();
+            break;
+        case MODE_C_PACE:
+            if (len < 2) return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+            mode_c_set_pace(p[1]);
+            break;
+
+        /* --- User key remap (manual path) --- */
+        case USER_KEYMAP_SET:
+            /* 16 bytes: cmd + 15 HID usage IDs (pos 0..14). */
+            if (len < 1 + USER_KEYMAP_SLOTS)
+                return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+            for (uint8_t i = 0; i < USER_KEYMAP_SLOTS; i++) {
+                user_keymap_set_slot(i, p[1 + i]);
+            }
+            user_keymap_save();
+            LOG_INF("user keymap updated (persisted)");
             break;
 
         default:
@@ -143,12 +200,12 @@ static ssize_t on_keypress_write(struct bt_conn *conn,
     uint8_t k = ((const uint8_t *)buf)[0];
     if (k < 1 || k > 15) return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
     /* Sets last_key so the ripple wave starts from this key position.
-     * The effects tick renders the wave on the next 10ms cycle.
-     * TODO: schedule effects_on_key_up(k-1) via k_work_delayable(60ms)
-     *       because k_msleep inside a GATT callback is unsafe. */
+     * The effects tick renders the wave on the next 10ms cycle. */
     effects_on_key_down(k - 1);
     keypress_key = (int8_t)(k - 1);
-    k_work_schedule(&keypress_up_work, K_MSEC(80));
+    /* reschedule, not schedule: a repeat inside 80 ms must extend the highlight from
+     * the LATEST press instead of expiring on the first one's deadline. */
+    k_work_reschedule(&keypress_up_work, K_MSEC(80));
     return len;
 }
 
@@ -161,6 +218,14 @@ static ssize_t on_status_read(struct bt_conn *conn,
 }
 static void on_status_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
     status_notify_enabled = (value == BT_GATT_CCC_NOTIFY);
+}
+
+/* --- BE06: User keymap read (15 HID usage IDs, pos 0..14) --- */
+static ssize_t on_keymap_read(struct bt_conn *conn,
+                              const struct bt_gatt_attr *attr,
+                              void *buf, uint16_t len, uint16_t offset) {
+    return bt_gatt_attr_read(conn, attr, buf, len, offset,
+                             user_keymap_table, USER_KEYMAP_SLOTS);
 }
 
 /* --- BE05: Mode C Events notify --- */
@@ -204,12 +269,16 @@ BT_GATT_SERVICE_DEFINE(zmk_player_svc,
     BT_GATT_CHARACTERISTIC(ZMK_PLAYER_CHRC_EVENTS,
         BT_GATT_CHRC_NOTIFY, BT_GATT_PERM_NONE, NULL, NULL, NULL),
     BT_GATT_CCC(on_events_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+
+    /* User keymap (READ) - 15 HID usage IDs for positions 0..14 */
+    BT_GATT_CHARACTERISTIC(ZMK_PLAYER_CHRC_KEYMAP,
+        BT_GATT_CHRC_READ, BT_GATT_PERM_READ, on_keymap_read, NULL, NULL),
 );
 
 int ble_service_init(void) {
     /* GATT service is statically declared with BT_GATT_SERVICE_DEFINE and
      * auto-registered at boot (CONFIG_BT_GATT_DYNAMIC_DB=n). No manual
-     * call needed — and indeed impossible: with DYNAMIC_DB=n the static
+     * call needed - and indeed impossible: with DYNAMIC_DB=n the static
      * macro emits a `struct bt_gatt_service_static`, which doesn't match
      * the `struct bt_gatt_service *` arg of bt_gatt_service_register. */
     k_work_init_delayable(&keypress_up_work, keypress_up_work_fn);

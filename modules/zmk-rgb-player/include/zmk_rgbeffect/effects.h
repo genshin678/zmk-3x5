@@ -3,6 +3,7 @@
  */
 #pragma once
 #include <stdint.h>
+#include <stdbool.h>
 
 typedef enum {
     RGB_EFFECT_OFF          = 0,
@@ -15,6 +16,8 @@ typedef enum {
     RGB_EFFECT_COUNT        = 7
 } rgb_effect_t;
 
+/* Keep in step with chain-length (overlay) and led_pixel.h. Not derived from
+ * devicetree - change all three together (overlay / led_pixel.h / here). */
 #ifndef LED_PIXEL_COUNT
 #define LED_PIXEL_COUNT 15
 #endif
@@ -26,6 +29,20 @@ void effects_set_active(rgb_effect_t e);
 rgb_effect_t effects_get_active(void);
 void effects_next(int direction);
 void effects_set_active_key(int8_t key_index);
+
+/* True while the score player owns the strip (between effects_player_enter()
+ * and effects_player_exit()). Callers that want to change the effect from
+ * outside (e.g. the BLE light commands) must not start the render tick in
+ * that window or the two would fight over the same pixels. */
+bool effects_is_player_active(void);
+
+/* Record the active effect WITHOUT rendering it or starting the tick.
+ *
+ * Used when the player owns the strip: the value simply sits in `active` and
+ * effects_player_exit() re-applies it (it ends in effects_set_active(active)),
+ * so a change made mid-playback takes effect the moment playback stops
+ * instead of corrupting the in-flight frames. */
+void effects_set_active_deferred(rgb_effect_t e);
 
 /* Called by player / ble_service when a note fires. */
 void effects_on_key_down(int8_t key_index);

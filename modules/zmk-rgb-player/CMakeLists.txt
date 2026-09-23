@@ -10,13 +10,17 @@ target_sources(app PRIVATE
     src/dfu.c
     src/cdc.c
     src/mode_c.c
+    src/bringup.c
     src/module_init.c
+    src/user_keymap.c
+    src/behaviors/behavior_user_kp.c
     src/behaviors/behavior_bri_dual_hold.c
     src/behaviors/behavior_hue_dual_hold.c
     src/behaviors/behavior_effect_cycle.c
     src/behaviors/behavior_dfu_combo.c
     src/behaviors/behavior_kp_with_effect.c
     src/behaviors/behavior_bt_clear_bonds.c
+    src/behaviors/behavior_out_guard.c
 )
 
 target_include_directories(app PRIVATE include)

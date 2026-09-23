@@ -25,6 +25,12 @@ rgb_effect_t rgb_control_get_effect(void);
 void         rgb_control_set_effect(rgb_effect_t e);
 void         rgb_control_next_effect(void);   /* cycle +1 */
 
+/* NVS persistence (see rgb_control.c). rgb_control_save() writes the current
+ * effect/brightness/hue; rgb_control_get_saved_effect() reports the effect
+ * restored at boot, if any. */
+void rgb_control_save(void);
+bool rgb_control_get_saved_effect(rgb_effect_t *out);
+
 /* Brightness loop (Y+P simultaneous hold) */
 void   rgb_control_bri_loop_start(bri_loop_t dir);
 void   rgb_control_bri_loop_stop(void);

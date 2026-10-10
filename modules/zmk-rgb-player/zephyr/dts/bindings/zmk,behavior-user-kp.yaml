@@ -1,0 +1,10 @@
+description: >
+  Runtime-remappable manual key behavior. Drop-in replacement for the stock
+  &kp on the 15 main keys. On press/release it emits the HID usage stored in
+  user_keymap_table[event.position] (configured over BLE; default = 光遇
+  layout) instead of a compile-time binding, so the mapping is whatever the
+  user configured. Combos still work: when a combo captures a key's position
+  events the behavior is never invoked, exactly as with stock &kp, so keys
+  that double as combo triggers keep their letter suppressed during a chord.
+compatible: zmk,behavior-user-kp
+binding-cells: []

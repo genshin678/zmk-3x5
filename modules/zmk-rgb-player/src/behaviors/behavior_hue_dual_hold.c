@@ -15,6 +15,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <drivers/behavior.h>
+#include <zmk_rgbeffect/mode_c.h>
 #include <zmk_rgbeffect/rgb_control.h>
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
@@ -34,6 +35,11 @@ static int on_pressed(struct zmk_behavior_binding *binding,
                       struct zmk_behavior_binding_event event) {
     ARG_UNUSED(binding);
     ARG_UNUSED(event);
+    /* Locked out while a score is playing: the strip and the cue belong to Mode C
+     * until the user stops. See behavior_effect_cycle.c for the full reasoning. */
+    if (mode_c_is_active()) {
+        return 0;
+    }
     combo_held = true;
     k_work_init_delayable(&hue_hold_work, fire_loop);
     k_work_schedule(&hue_hold_work, K_MSEC(100));

@@ -1,12 +1,14 @@
 manifest:
-  defaults:
-    revision: v0.3
   remotes:
     - name: zmkfirmware
       url-base: https://github.com/zmkfirmware
+    - name: genshin678
+      url-base: https://github.com/genshin678
   projects:
     - name: zmk
-      remote: zmkfirmware
+      remote: genshin678
+      repo-path: zmk-1
+      revision: keep-adv-v0.3
       import: app/west.yml
   self:
     path: config

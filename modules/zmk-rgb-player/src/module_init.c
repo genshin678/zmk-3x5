@@ -13,6 +13,8 @@
 #include <zmk_rgbeffect/player.h>
 #include <zmk_rgbeffect/ble_service.h>
 #include <zmk_rgbeffect/mode_c.h>
+#include <zmk_rgbeffect/cdc.h>
+#include <zmk_rgbeffect/bringup.h>
 
 LOG_MODULE_REGISTER(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
@@ -22,6 +24,34 @@ static int zmk_rgbeffect_init(void) {
     player_init();
     ble_service_init();
     mode_c_init();
+    /* PC over USB. Ordering does not matter here, but it has to be called: the
+     * previous cdc.c was never wired in at all, which is why a plugged in board
+     * accepted nothing but keystrokes. */
+    pc_uart_init();
+#if defined(CONFIG_ZMK_RGB_PLAYER_BRINGUP)
+    bringup_init();
+#endif
+
+    /* Bring up the configured starting effect.
+     *
+     * This is NOT redundant with effects_init(), which only binds the led_strip
+     * device. The active effect defaults to RGB_EFFECT_OFF and the render tick
+     * is started ONLY by effects_set_active(), so without this call the strip
+     * stays dark on every boot - which is indistinguishable from broken LEDs.
+     * That was one half of the "the light effects don't work" report.
+     *
+     * Skipped in the BRINGUP build, where src/bringup.c owns the strip and
+     * effects_set_active() is deliberately inert. */
+#if !defined(CONFIG_ZMK_RGB_PLAYER_BRINGUP)
+    /* Prefer the effect restored from NVS; fall back to the configured default
+     * on first boot (or when the stored value is no longer a valid effect). */
+    rgb_effect_t start_effect;
+    if (!rgb_control_get_saved_effect(&start_effect)) {
+        start_effect = (rgb_effect_t)CONFIG_ZMK_RGB_PLAYER_DEFAULT_EFFECT;
+    }
+    effects_set_active(start_effect);
+#endif
+
     LOG_INF("zmk-rgb-player module initialized");
     return 0;
 }

@@ -1,0 +1,6 @@
+description: >
+  Toggle the active output endpoint (USB / Bluetooth), exactly like the stock
+  &out OUT_TOG, but refuse to do so while a score is playing. Exists so that a
+  combo bound to keys a score can ask for (I+K) cannot steal the link mid-song.
+compatible: zmk,behavior-out-guard
+binding-cells: []

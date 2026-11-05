@@ -28,7 +28,20 @@ LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
  * BLE service - rather than relying on each caller to behave. */
 #define RGB_MAX_BRIGHTNESS 96
 
-static uint8_t   brightness   = RGB_MAX_BRIGHTNESS;
+/* Boot default for the IDLE / ambient effect brightness.
+ *
+ * Set to 48/96 (~50%, which the web & Android apps surface as "48 out of 100").
+ * That is plenty visible for every effect while roughly halving idle strip
+ * current versus the old full-default. Every app's brightness slider still
+ * ranges 0..96 (its "100"), so the user can still crank it back to full via
+ * the software.
+ *
+ * IMPORTANT: this is the ambient default ONLY. Mode C performance cues
+ * (CUE_GREEN / CUE_BLUE / CUE_RED in mode_c.c) paint fixed led_rgb colors and
+ * never read this variable, so the playing lights are unaffected. */
+#define RGB_DEFAULT_BRIGHTNESS 48
+
+static uint8_t   brightness   = RGB_DEFAULT_BRIGHTNESS;
 static uint16_t  hue         = 200;
 static int8_t    last_key    = -1;
 

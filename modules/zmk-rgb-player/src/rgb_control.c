@@ -22,19 +22,20 @@ LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
  * only while the strip is lit (a sagging rail browns out the MCU; the boot
  * signature would replay).
  *
- * 96/255 (~38%) is still clearly visible for every effect and keeps the strip
- * worst case near ~340 mA. The clamp lives in rgb_control_set_brightness() so
- * EVERY path is bounded - the boot default, the Y+P brightness loop, and the
- * BLE service - rather than relying on each caller to behave. */
-#define RGB_MAX_BRIGHTNESS 96
+ * The ceiling is 48/255 (~19%). The web / Android apps keep a cosmetic 0..100
+ * slider face, so their "100" maps to this real firmware 48 - the user can
+ * still dim down but never exceed it. The clamp lives in
+ * rgb_control_set_brightness() so EVERY path is bounded - the boot default,
+ * the Y+P brightness loop, and the BLE service - rather than relying on each
+ * caller to behave. */
+#define RGB_MAX_BRIGHTNESS 48
 
 /* Boot default for the IDLE / ambient effect brightness.
  *
- * Set to 48/96 (~50%, which the web & Android apps surface as "48 out of 100").
- * That is plenty visible for every effect while roughly halving idle strip
- * current versus the old full-default. Every app's brightness slider still
- * ranges 0..96 (its "100"), so the user can still crank it back to full via
- * the software.
+ * Set to 48 (the ceiling itself) - the web & Android apps surface this as
+ * "100" on their 0..100 slider face. That is clearly visible for every effect
+ * while keeping idle strip current low. The brightness loop (Y+P) wraps past
+ * the ceiling, so even sitting AT the ceiling the user can still nudge it down.
  *
  * IMPORTANT: this is the ambient default ONLY. Mode C performance cues
  * (CUE_GREEN / CUE_BLUE / CUE_RED in mode_c.c) paint fixed led_rgb colors and

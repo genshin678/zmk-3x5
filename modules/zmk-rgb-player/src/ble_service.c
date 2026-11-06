@@ -19,6 +19,7 @@
 #include <zmk_rgbeffect/mode_c.h>
 #include <zmk_rgbeffect/user_keymap.h>
 #include <zmk_rgbeffect/rgb_control.h>
+#include <zmk_rgbeffect/cdc.h>
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
@@ -292,14 +293,30 @@ static void on_events_ccc_changed(const struct bt_gatt_attr *attr, uint16_t valu
     events_notify_enabled = (value == BT_GATT_CCC_NOTIFY);
 }
 
-/* Implemented here (it owns the GATT attr); called by mode_c.c. */
+/* Implemented here (it owns the GATT attr); called by mode_c.c.
+ *
+ * cdc_emit_event() puts the same event on the USB cable, so a PC session sees
+ * HIT/MISS/STEP/DONE exactly as a phone does over BE05 - the only way a client
+ * can follow the cursor in AUTO pace, where nothing is ever HIT. It is an
+ * unguarded call on purpose: cdc.h declares a no-op for builds without the
+ * channel, so there is no second version of this function to keep in step. */
 void mode_c_notify_event(uint8_t event, uint8_t key, uint16_t step) {
-    if (!events_notify_enabled) return;
     events_buf[0] = event;
     events_buf[1] = key;
     events_buf[2] = (uint8_t)(step & 0xFF);
     events_buf[3] = (uint8_t)((step >> 8) & 0xFF);
-    gatt_notify_u16(ZMK_PLAYER_CHRC_EVENTS, events_buf, sizeof(events_buf));
+    /* The BLE notify must only fire once a phone has subscribed to BE05's
+     * CCC, but a wired PC session has no such subscription. Gating the whole
+     * function on events_notify_enabled therefore silenced cdc_emit_event()
+     * for USB: the PC received OK START / OK TICK but never a single EVT:* line,
+     * so the pwa watchdog declared the step table dead and re-pushed forever.
+     * cdc_emit_event() is a no-op in BLE-only builds (see cdc.h), so calling
+     * it unconditionally is safe and lets a PC follow the cursor exactly as a
+     * phone does - the whole point of the serial text protocol. */
+    if (events_notify_enabled) {
+        gatt_notify_u16(ZMK_PLAYER_CHRC_EVENTS, events_buf, sizeof(events_buf));
+    }
+    cdc_emit_event(event, key, step);
 }
 
 /* --- GATT service registration --- */

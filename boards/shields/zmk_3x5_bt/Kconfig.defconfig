@@ -15,4 +15,43 @@ config SPI
     default y
 
 
+# --- PC command channel over USB (cdc.c) ---
+# The board already enumerates as a HID keyboard on USB. These open the CDC ACM
+# function alongside it, which is what turns the cable into a two-way link: the
+# score and control commands go IN, the EVT:* lines come OUT.
+#
+# Every symbol below must carry an explicit type. A bare `config X default y`
+# in a defconfig is "defined without a type" - Kconfig warns, Zephyr turns the
+# warning into an abort, and the whole build dies before compiling anything.
+#
+# SERIAL is the one that is easy to miss: serial_out/uart_cdc_acm live under
+# drivers/serial, and SERIAL_HAS_DRIVER depends on SERIAL. Leaving SERIAL=n
+# silently drops the ACM driver even with USB_CDC_ACM=y, and the device would
+# then be missing at link time.
+config SERIAL
+    bool
+    default y
+
+# USB_CONSOLE is the small, stable way to bring the ACM function up (it selects
+# USB_CDC_ACM). It is not a logging switch: with CONFIG_LOG=n there is nothing
+# to print, and the chosen node that `zmk,console` would name is left undefined
+# so ZMK's console subsystem never claims this device.
+config USB_CONSOLE
+    bool
+    default y
+
+config USB_CDC_ACM
+    bool
+    default y
+
+# The whole file works out of a work queue: the TX ring is drained from a
+# workqueue because uart_poll_out() takes the driver's mutex and cannot be
+# called from the UART interrupt. zephyr/work.h wraps every declaration in
+# #if defined(CONFIG_WORK), so with WORK=n the work API arrives as implicit
+# declarations (k_work_submit_delayable came in exactly like that on CI).
+config WORK
+    bool
+    default y
+
+
 endif

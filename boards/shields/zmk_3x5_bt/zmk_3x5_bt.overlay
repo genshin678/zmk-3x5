@@ -31,6 +31,11 @@
         zmk,kscan = &kscan0;
         zmk,matrix-transform = &default_transform;
         zmk,led-strip = &led_strip;
+        /* The PC command channel. This is NOT ZMK's debug console: `zmk,console`
+         * is deliberately left undefined so console logging never steals the USB
+         * function, and a separate chosen node names the CDC ACM port that
+         * cdc.c talks to. Two different jobs, two different chosen nodes. */
+        zmk,pc-uart = &pc_uart;
     };
 
     kscan0: kscan {
@@ -95,6 +100,35 @@
  */
 &{/EXT_POWER} {
     control-gpios = <&gpio0 13 GPIO_ACTIVE_HIGH>;
+};
+
+/* The nRF52840 USB device controller comes up disabled in the SoC dtsi, and ZMK's
+ * HID output alone does not pull the cdc_acm function into the composite device,
+ * so it is enabled here - together with the one node that has to live under it.
+ *
+ * USB CDC ACM: the score/control channel to a PC over the same cable that
+ * already carries the HID keystrokes out. It needs CONFIG_USB_CDC_ACM (see
+ * Kconfig.defconfig); without it cdc.c compiles out and this node is inert.
+ *
+ * The node HAS TO NEST UNDER &usbd. `zephyr,cdc-acm-uart` carries `on-bus: usb`
+ * in its binding, and cdc_acm.c closes its DEVICE_DT_INST_DEFINE with
+ *
+ *     BUILD_ASSERT(DT_INST_ON_BUS(idx, usb),
+ *                  "node " DT_NODE_PATH(DT_DRV_INST(idx))
+ *                  " is not assigned to a USB device controller")
+ *
+ * so a top-level `compatible = "zephyr,cdc-acm-uart"` fails the build with
+ * exactly "node /pc_uart is not assigned to a USB device controller" (observed
+ * on CI). Nesting under the USB device controller (usbd@40027000) is what puts
+ * the node on the usb bus, which is also why there is no `usb-device-controller`
+ * property here: the binding does not declare one, and an undeclared property is
+ * an edtlib error, not a warning. */
+&usbd {
+    status = "okay";
+
+    pc_uart: pc_uart {
+        compatible = "zephyr,cdc-acm-uart";
+    };
 };
 
 &pinctrl {

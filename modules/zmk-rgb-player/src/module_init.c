@@ -13,6 +13,7 @@
 #include <zmk_rgbeffect/player.h>
 #include <zmk_rgbeffect/ble_service.h>
 #include <zmk_rgbeffect/mode_c.h>
+#include <zmk_rgbeffect/cdc.h>
 #include <zmk_rgbeffect/bringup.h>
 
 LOG_MODULE_REGISTER(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
@@ -23,6 +24,10 @@ static int zmk_rgbeffect_init(void) {
     player_init();
     ble_service_init();
     mode_c_init();
+    /* PC over USB. Ordering does not matter here, but it has to be called: the
+     * previous cdc.c was never wired in at all, which is why a plugged in board
+     * accepted nothing but keystrokes. */
+    pc_uart_init();
 #if defined(CONFIG_ZMK_RGB_PLAYER_BRINGUP)
     bringup_init();
 #endif

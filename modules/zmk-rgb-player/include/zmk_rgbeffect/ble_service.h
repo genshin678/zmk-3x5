@@ -63,6 +63,19 @@
 #define MODE_C_TICK   0x32  /* + u32 app_ms (reference clock, informational) */
 #define MODE_C_STOP   0x35  /* (no params) aborts playback, clears the step table */
 #define MODE_C_PACE   0x36  /* + u8 pace: 0 = manual (press to advance), 1 = auto */
+/* 0x3A STOP_KEEP: abort playback but KEEP steps[]/step_count, so the same score can
+ * be replayed with a bare 0x30 and nothing is re-uploaded. This is what makes
+ * "stop -> start again" instant on a 600-step score (a CoreBluetooth write is
+ * 20-30 ms, so a full re-push is 15+ seconds of pure waiting). Its own bit in
+ * fw_flags (bit7) advertises it; a build without that bit still meaningfully
+ * clears the table on 0x35, exactly as every existing App expects. */
+#define MODE_C_STOP_KEEP 0x3A
+/* 0x3B PUSH_BURST: + u8 count, then count x (u16 delta, u16 mask, u8 duration) =
+ * 1 + 5*count bytes. Because of the 5-byte stride a 24-step burst is 122 bytes,
+ * which fits one write on any MTU >= 125 (iOS negotiates 185). Each entry is
+ * handed to mode_c_push() in order, so the resulting table is byte-identical to
+ * count individual 0x31 writes - just 24x fewer round trips. */
+#define MODE_C_PUSH_BURST 0x3B
 
 /* User key remap (manual path, see user_keymap.c).
  *   USER_KEYMAP_SET 0x40  + 15 bytes: HID usage ID per physical position 0..14.

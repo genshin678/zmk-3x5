@@ -140,7 +140,7 @@ static const struct led_rgb CUE_GREEN = { .r = 0,   .g = 255, .b = 0   };
  * attempt at this did. A volatile pointer forces a real load, hence a relocation, hence
  * a section the linker has to keep; __attribute__((used)) is belt and braces. */
 static const uint8_t mc_build_tag[] __attribute__((used)) =
-    "MCV8/FASTCUE+KEYMAP+RGBWEB";
+    "MCV9/TABLECACHE+FASTCUE+KEYMAP+RGBWEB";
 static const uint8_t *volatile mc_build_tag_probe = mc_build_tag;
 static volatile uint8_t mc_build_tag_sink;
 
@@ -584,6 +584,16 @@ void mode_c_tick(uint32_t app_ms) {
 }
 
 void mode_c_stop(void) {
+    mode_c_stop_keep();
+    step_count = 0;   /* the table is per-session; the App always PUSHes again */
+    LOG_INF("mode_c_stop (table cleared)");
+}
+
+/* Stop playback but leave the pushed table alone. mode_c_start() already keeps the
+ * table on a restart, so with this the App can replay the same score forever with a
+ * bare PACE+START - no re-upload. Everything that must not survive a stop (held
+ * keys, cursor, chord masks, LED ownership) is still cleared. */
+void mode_c_stop_keep(void) {
     k_work_cancel_delayable(&step_work);
     k_work_cancel_delayable(&advance_work);
     k_work_cancel_delayable(&restore_work);
@@ -594,14 +604,14 @@ void mode_c_stop(void) {
     hid_warned = false;
     mc_hid_release_all();
     state = MC_IDLE;
+    cur_step = 0;
     hit_mask = 0;
     prehit_mask = 0;
     pressed_mask = 0;
-    step_count = 0;   /* the table is per-session; the App always PUSHes again */
     led_pixel_clear();
     led_pixel_update();
     effects_player_exit();
-    LOG_INF("mode_c_stop");
+    LOG_INF("mode_c_stop_keep (%u steps kept)", step_count);
 }
 
 void mode_c_set_pace(uint8_t p) {

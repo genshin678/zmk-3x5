@@ -102,12 +102,18 @@
  *   bit6 FASTCUE - manual cues advance on a fixed 60 ms micro-gap, NOT on the score's
  *                  inter-step delta, and keys struck during that gap are latched
  *                  (prehit_mask). Without this bit MANUAL waits out a whole beat per
- *                  hit, which is exactly the "the guide got slow again" regression.
+ *                  hit, which is exactly "the guide got slow again".
+ *   bit7 TABLE CACHE - the board implements 0x3A STOP_KEEP (stop playback, keep
+ *                  steps[]) and 0x3B PUSH_BURST (N steps per write). An App may then
+ *                  reuse the table for a repeat of the same score and skip the
+ *                  upload entirely, and may push scores in bursts. Without this bit
+ *                  both opcodes are absent, so the App must keep doing STOP+full
+ *                  PUSH - which is what every older build requires anyway.
  *
  * NOTE ON BIT5: bit5 stays key-remap forever. bit5 used to mean "fast manual" in the
  * line of builds that never shipped a key map, and that older meaning is retired -
  * judge a board by this bit only together with bit5, never by bit5 alone. */
-#define ZMK_RGB_PLAYER_FW_FLAGS 0x7Fu
+#define ZMK_RGB_PLAYER_FW_FLAGS 0xFFu
 
 /* Event opcodes sent on the BLE EVENTS characteristic. */
 #define MODE_C_EVT_HIT     0x01
@@ -122,6 +128,11 @@ void mode_c_start(uint16_t note_count);
 void mode_c_push(uint16_t delta_ms, uint16_t key_mask, uint8_t duration_ms);
 void mode_c_tick(uint32_t app_ms);
 void mode_c_stop(void);
+/* Same stop, but steps[]/step_count survive. mode_c_start() only zeroes the cursor,
+ * so a repeat of the same score needs no PUSH at all. The caller MUST still send a
+ * full 0x35 (mode_c_stop) before pushing a DIFFERENT score, otherwise the new steps
+ * would append to the old table. */
+void mode_c_stop_keep(void);
 
 /* Pacing. Callable at any time, including mid-session and while idle: the value
  * persists across STOP/DONE, so the next session starts the way the user left it. */

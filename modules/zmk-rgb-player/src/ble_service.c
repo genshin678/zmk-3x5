@@ -168,6 +168,26 @@ static ssize_t on_control_write(struct bt_conn *conn,
         case MODE_C_STOP:
             mode_c_stop();
             break;
+        case MODE_C_STOP_KEEP:
+            /* Stop but keep steps[]: the App can replay the same score with a bare
+             * START instead of re-uploading hundreds of steps over BLE. */
+            mode_c_stop_keep();
+            break;
+        case MODE_C_PUSH_BURST: {
+            /* 1 + 5*count bytes: count x (u16 delta, u16 mask, u8 dur).
+             * Same table as `count` separate 0x31 writes, but one GATT round trip. */
+            if (len < 2) return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+            uint8_t n = p[1];
+            if ((uint16_t)(2 + 5 * n) > len)
+                return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+            for (uint8_t i = 0; i < n; i++) {
+                const uint8_t *q = p + 2 + i * 5;
+                mode_c_push((uint16_t)(q[0] | (q[1] << 8)),
+                            (uint16_t)(q[2] | (q[3] << 8)),
+                            q[4]);
+            }
+            break;
+        }
         case MODE_C_PACE:
             if (len < 2) return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
             mode_c_set_pace(p[1]);
@@ -206,7 +226,7 @@ static ssize_t on_control_write(struct bt_conn *conn,
 
         case LIGHT_CTRL_SET_BRIGHTNESS:
             if (len < 2) return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
-            /* Clamped to RGB_MAX_BRIGHTNESS (96) inside - see rgb_control.c. */
+            /* Clamped to RGB_MAX_BRIGHTNESS (48) inside - see rgb_control.c. */
             rgb_control_set_brightness(p[1]);
             break;
 

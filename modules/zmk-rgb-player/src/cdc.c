@@ -45,6 +45,8 @@
  *   PUSH <delta> <mask> <dur>   append one step (debug / step-by-step)
  *   START [<count>]             mode_c_start(count); count defaults to table size
  *   STOP                        mode_c_stop() - aborts and clears the table
+ *   STOPKEEP                    mode_c_stop_keep() - aborts, KEEPS the table so
+ *                               the same score can be re-STARTed with no re-push
  *   PAUSE                       reports where the cursor sits
  *   PACE <0|1>                  0 = manual (user paced), 1 = auto (board plays)
  *   TICK <ms>                   reference clock, informational
@@ -367,6 +369,13 @@ static void pc_exec_line(char *buf) {
     } else if (strcmp(cmd, "STOP") == 0) {
         mode_c_stop();
         pc_tx("OK STOP");
+
+    } else if (strcmp(cmd, "STOPKEEP") == 0) {
+        /* Stop playback, keep the step table. The PC client can then re-START the
+         * same score without re-sending several hundred STEP lines over the wire.
+         * A different score must still be preceded by a plain STOP (which clears). */
+        mode_c_stop_keep();
+        pc_tx("OK STOPKEEP %u", mode_c_step_count());
 
     } else if (strcmp(cmd, "PAUSE") == 0) {
         pc_tx("OK PAUSE %u", mode_c_current_step());

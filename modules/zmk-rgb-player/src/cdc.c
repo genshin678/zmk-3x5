@@ -55,7 +55,7 @@
  *   KEYRESET                    restore the factory 光遇 layout
  *   LIGHT                       read back effect,brightness,hue
  *   EFFECT <0..6>               LED effect
- *   BRIGHT <0..96>              96 is the ceiling: 15 LEDs on a 5 V rail
+ *   BRIGHT <0..48>              48 is the ceiling (software slider 100 == 48): 15 LEDs on a 5 V rail
  *   HUE <0..359>                hue
  *   LIGHTSAVE                   persist effect/brightness/hue to NVS
  *   STATUS                      one-line dump of everything above
@@ -286,10 +286,20 @@ static bool pc_parse_hex(const char *s, uint8_t *out, int count) {
 }
 
 static void pc_print_keymap(void) {
-    pc_tx("KEYS:");
+    /* ONE line: "KEYS:" + 30 hex chars, exactly as documented at the top of this
+     * file and exactly what the PC client parses (`line.slice(5)` must be 30
+     * chars long). The old code called pc_tx() once for the prefix and once per
+     * usage; pc_tx() terminates every call with '\n', so the wire carried 16
+     * short lines. serial:read('be06') matched the bare "KEYS:" line, got an
+     * empty hex string and threw "键位读回异常" - i.e. reading the key map over
+     * USB never worked, while the BLE path (raw 15-byte read) worked fine. */
+    char out[5 + 2 * USER_KEYMAP_SLOTS + 1];
+    memcpy(out, "KEYS:", 5);
     for (int i = 0; i < USER_KEYMAP_SLOTS; i++) {
-        pc_tx("%02X", user_keymap_get_slot((uint8_t)i));
+        snprintf(&out[5 + i * 2], 3, "%02X", user_keymap_get_slot((uint8_t)i));
     }
+    out[5 + 2 * USER_KEYMAP_SLOTS] = '\0';
+    pc_tx("%s", out);
 }
 
 static void pc_print_light(void) {

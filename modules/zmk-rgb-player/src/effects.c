@@ -1,9 +1,9 @@
 /*
  * effects.c - 6 effect routines on the 15-pixel WS2812B strip
  *
- * Effect 0 = OFF (all pixels dark, no tick).
- * Effect 1/2/3 = ZMK built-in solid / breathing / rainbow (ZMK drives them).
- * Effect 4/5/6 = per-pixel effects driven by our own render thread tick.
+ * Effect 0     = OFF (all pixels dark, no tick).
+ * Effect 1/2/3 = solid / breathing / rainbow (whole-strip, one colour).
+ * Effect 4/5/6 = single-key / twinkle / ripple (per-pixel, key-aware).
  *
  * For effect 6 (ripple), the wave origin is the key most recently PRESSED,
  * latched by ripple_trigger(); the ring is a single pulse, not a loop.
@@ -197,12 +197,24 @@ static void render_off(void) {
     led_pixel_update();
 }
 
+/* One full up-and-down breath cycle, in wall clock.
+ *
+ * Was 16 s (100 triangle steps x 160 ms) - far too slow to read as "breathing"
+ * at a glance; you could not tell whether the strip was animating or parked
+ * at a fixed brightness. 3 s is the shipped feel: ~1.5 s in, ~1.5 s out.
+ *
+ * The period is expressed in milliseconds and divided at compile time, so
+ * EFFECTS_TICK_MS stays the only knob (see the note above FRAMES). */
+#define BREATH_PERIOD_MS 3000
+#define BREATH_STEPS     100                                 /* triangle resolution */
+#define BREATH_STEP_MS   (BREATH_PERIOD_MS / BREATH_STEPS)    /* 30 ms per step */
+BUILD_ASSERT(FRAMES(BREATH_STEP_MS) >= 1, "breath step is shorter than one tick");
+
 static uint8_t breathing_scale(void) {
-    /* ~16 s for a full up-and-down cycle: each of the 100 triangle steps is
-     * 160 ms of wall clock, at any tick period. */
-    uint32_t t = (tick_count / FRAMES(160)) % 100;
-    uint32_t tri = (t < 50) ? (t * 2) : ((100 - t) * 2); /* 0..100 triangle */
-    return (uint8_t)(20 + (tri * 80) / 100);             /* 20%..100% */
+    uint32_t t   = (tick_count / FRAMES(BREATH_STEP_MS)) % BREATH_STEPS;
+    uint32_t tri = (t < BREATH_STEPS / 2) ? (t * 2)
+                                          : ((BREATH_STEPS - t) * 2); /* 0..100 */
+    return (uint8_t)(20 + (tri * 80) / 100);                          /* 20%..100% */
 }
 
 static void render_solid(void) {

@@ -109,6 +109,8 @@ static void keepalive_work_fn(struct k_work *work) {
 static struct k_work_delayable step_work;    /* AUTO: the step's own clock */
 static struct k_work_delayable advance_work; /* post-HIT gap -> next step */
 static struct k_work_delayable restore_work; /* undo a flash */
+static struct k_work_delayable refresh_work; /* re-send a parked cue frame */
+static int64_t flash_until_ms;               /* a flash owns the strip until then */
 static struct k_work_delayable release_work;    /* AUTO: lift the emitted HID keys */
 static struct k_work_delayable hid_retry_work;   /* re-send a report the link refused */
 static uint16_t sent_mask = 0;               /* keys the HOST was last TOLD are down */
@@ -121,7 +123,18 @@ static void mc_advance(void);
 static void mc_hid_flush(void);
 
 /* Cue colors (led_rgb is r,g,b; the ST-1209RGB G,R,B wire order is handled by the
- * driver, which is where that measurement belongs). */
+ * driver, which is where that measurement belongs).
+ *
+ * MC_CUE_LEVEL - the cue palette is scaled to the same ceiling the rest of the
+ * firmware uses for this strip (15 x WS2812B on a small 5 V rail). The player
+ * used to paint at the RAW 255 values, i.e. straight through that ceiling: a MISS
+ * lights all fifteen pixels at once, which is the largest current step the strip
+ * can ask the rail to make. On a data line that has no VIH margin to spare, the
+ * frame latched right after such a step is the one most likely to come out wrong,
+ * and "wrong frame" on a WS2812 chain reads exactly as scrambled colours in
+ * scrambled positions. At 48 the MISS step is ~5x smaller and still plainly
+ * readable (the user's ambient effects run at the same level). */
+#define MC_CUE_LEVEL 48
 static const struct led_rgb CUE_BLUE  = { .r = 0,   .g = 40,  .b = 255 };
 static const struct led_rgb CUE_RED   = { .r = 255, .g = 0,   .b = 0   };
 static const struct led_rgb CUE_GREEN = { .r = 0,   .g = 255, .b = 0   };
@@ -140,7 +153,7 @@ static const struct led_rgb CUE_GREEN = { .r = 0,   .g = 255, .b = 0   };
  * attempt at this did. A volatile pointer forces a real load, hence a relocation, hence
  * a section the linker has to keep; __attribute__((used)) is belt and braces. */
 static const uint8_t mc_build_tag[] __attribute__((used)) =
-    "MCV11/TABLECACHE+BREATH3S+USBFIX+FASTCUE+KEYMAP+RGBWEB";
+    "MCV12/TABLECACHE+BREATH3S+USBFIX+CUEFIX+FASTCUE+KEYMAP+RGBWEB";
 static const uint8_t *volatile mc_build_tag_probe = mc_build_tag;
 static volatile uint8_t mc_build_tag_sink;
 
@@ -178,9 +191,15 @@ static uint32_t clamp_delta(uint32_t want, uint32_t floor_ms) {
 }
 
 static void paint_mask(uint16_t mask, const struct led_rgb c) {
+    /* One scale factor for every cue, so the whole palette dims together and
+     * no cue can sneak past the current ceiling by being 'just this once'. */
+    const uint8_t k = MC_CUE_LEVEL;
+    const uint8_t r = (uint8_t)((c.r * k) / 255);
+    const uint8_t g = (uint8_t)((c.g * k) / 255);
+    const uint8_t b = (uint8_t)((c.b * k) / 255);
     for (int i = 0; i < LED_PIXEL_COUNT; i++) {
         if (mask & (uint16_t)(1u << i)) {
-            led_pixel_set((uint8_t)i, c.r, c.g, c.b);
+            led_pixel_set((uint8_t)i, r, g, b);
         }
     }
 }
@@ -361,6 +380,7 @@ static void render_step(void) {
 }
 
 static void flash_mask(uint16_t mask, const struct led_rgb c, int ms) {
+    flash_until_ms = (int64_t)k_uptime_get() + ms;
     led_pixel_clear();
     paint_mask(mask, c);
     led_pixel_update();
@@ -392,6 +412,38 @@ static void restore_work_fn(struct k_work *work) {
     if (state == MC_RUNNING) {
         render_step();
     }
+}
+
+/* Static cues need a heartbeat.
+ *
+ * This board drives a 5 V LED chain from a 3.3 V pin with no VIH margin (see the
+ * VIH MARGIN note in config/zmk_3x5_bt.conf), so an occasional corrupted frame is
+ * always possible and no amount of code removes it. The damage is that a parked
+ * cue is usually the SAME picture for a whole beat or longer: one bad frame stayed
+ * on the strip until the cursor moved, i.e. the guide "went rainbow" and sat there.
+ * Re-sending the current frame every MC_REFRESH_MS costs one ~0.7 ms SPI burst per
+ * 400 ms (0.2% duty) and repairs a bad frame long before a player can act on it.
+ *
+ * Rapid wrong presses made this obvious for the same reason: each one writes two
+ * frames (the red flash, then the restore), so the odds of catching a bad frame
+ * scale with how often the player misses. */
+#define MC_REFRESH_MS 400u
+static void refresh_work_fn(struct k_work *work) {
+    ARG_UNUSED(work);
+    if (!mode_c_is_active()) {
+        return;   /* session over: nothing left to repair */
+    }
+    /* A flash owns the strip until its deadline; painting the step over it would
+     * turn the hit/miss feedback into a flicker. The flash's own restore_work puts
+     * the right frame back, and the next refresh covers ANY error in it. */
+    if ((int64_t)k_uptime_get() < flash_until_ms) {
+        k_work_reschedule(&refresh_work, K_MSEC(MC_REFRESH_MS));
+        return;
+    }
+    if (state == MC_RUNNING) {
+        render_step();
+    }
+    k_work_reschedule(&refresh_work, K_MSEC(MC_REFRESH_MS));
 }
 
 /* ---- step arming / progression ---- */
@@ -554,6 +606,8 @@ void mode_c_start(uint16_t note_count) {
     last_tapped_timestamp = (int64_t)k_uptime_get();
     k_work_reschedule(&keepalive_work, K_MSEC(MC_COMBO_KEEPALIVE_MS));
     effects_player_enter();   /* claim the LED strip, stop the effect tick */
+    flash_until_ms = 0;
+    k_work_reschedule(&refresh_work, K_MSEC(MC_REFRESH_MS));
     LOG_INF("mode_c_start: %u steps (requested %u), pace %u", step_count, note_count, pace);
     mc_arm_step();
 }
@@ -597,6 +651,7 @@ void mode_c_stop_keep(void) {
     k_work_cancel_delayable(&step_work);
     k_work_cancel_delayable(&advance_work);
     k_work_cancel_delayable(&restore_work);
+    k_work_cancel_delayable(&refresh_work);
     k_work_cancel_delayable(&release_work);
     /* Deliberately NOT cancelling hid_retry_work: if the release below does not get
      * through, that work is the only thing left that will ever lift the chord off the
@@ -716,6 +771,8 @@ int mode_c_init(void) {
     k_work_init_delayable(&release_work, release_work_fn);
     k_work_init_delayable(&hid_retry_work, mc_hid_retry_fn);
     k_work_init_delayable(&keepalive_work, keepalive_work_fn);
+    k_work_init_delayable(&refresh_work, refresh_work_fn);
+    flash_until_ms = 0;
     state = MC_IDLE;
     step_count = 0;
     cur_step = 0;

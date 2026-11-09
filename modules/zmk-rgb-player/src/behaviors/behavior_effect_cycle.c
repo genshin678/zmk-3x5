@@ -11,6 +11,7 @@
 #include <zephyr/logging/log.h>
 #include <drivers/behavior.h>
 #include <zmk_rgbeffect/mode_c.h>
+#include <zmk_rgbeffect/pure_mode.h>
 #include <zmk_rgbeffect/rgb_control.h>
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
@@ -22,7 +23,7 @@ static int on_pressed(struct zmk_behavior_binding *binding,
      * reported. The combo stays inert until playback stops, like a hardware
      * lock-out. Nothing is lost: the effect list is unchanged, it just cannot be
      * cycled while the user is playing. */
-    if (mode_c_is_active()) {
+    if (mode_c_is_active() || pure_mode_is_active()) {
         return 0;
     }
     rgb_control_next_effect();

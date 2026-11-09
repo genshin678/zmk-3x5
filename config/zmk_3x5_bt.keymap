@@ -44,6 +44,30 @@
  *   pressed ALONE - and 12 of the 15 keys are combo members. Read the long
  *   block comment inside `combos {}` before editing any of it.
  *
+ * === Pure play mode (纯净弹琴) ===
+ *   HOLD Y + N + P + /          (positions 0 4 10 14, the four corners)
+ *     -> enter: K (position 7) blinks BLUE twice
+ *     -> leave: K blinks RED twice
+ *
+ *   While it is engaged the keymap sits on `pure_layer` below, whose fifteen
+ *   bindings are the same notes. Every combo in this file carries
+ *   `layers = <0>`, and ZMK only considers a combo a candidate when the
+ *   HIGHEST ACTIVE layer is in that set - so on layer 1 no combo exists at
+ *   all: Y+P, H+;, Y+N, P+N, O+. and I+K stop doing anything, and - the point
+ *   of the whole exercise - they stop CAPTURING their member keys, so those
+ *   notes type again (no 80 ms combo timeout, chords included).
+ *
+ *   The gesture is NOT a combo. Four corners cannot land inside an 80 ms combo
+ *   window, and a four-key combo containing Y/N/P would leave every one of
+ *   those keys with several candidates, which is exactly what made the old
+ *   four-corner combo poison the brightness/effect/DFU chords (see the block
+ *   comment inside `combos {}`). pure_mode.c detects it from position events
+ *   instead, which reach module listeners before the combo engine.
+ *
+ *   Additions here are only the layer and the `layers` filters. Do NOT give
+ *   the combos `layers = <0 1>` - that would put them straight back into pure
+ *   mode.
+ *
  * === Effect list (cycle order) ===
  *   0 OFF / 1 静态单色 / 2 单色呼吸 / 3 彩虹循环 / 4 单点亮 / 5 星光闪烁 / 6 波纹
  *
@@ -147,6 +171,26 @@
                 &user_kp &user_kp &user_kp &user_kp &user_kp
             >;
         };
+
+        /* Layer 1 - 纯净弹琴 (pure play mode).
+         *
+         * Deliberately a COPY of the default layer, not a layer full of &none:
+         * the point is that the notes still play while the function combos are
+         * gone. Nothing here is a combo trigger, and no combo in `combos {}`
+         * lists this layer, so the combo engine never captures a key here.
+         *
+         * It is reached only from pure_mode.c (zmk_keymap_layer_to(1)) - there
+         * is no &to binding for it on purpose, because a normal key could be
+         * hit by accident, and a 4-key gesture cannot. */
+        pure_layer {
+            label = "pure";
+
+            bindings = <
+                &user_kp &user_kp &user_kp &user_kp &user_kp
+                &user_kp &user_kp &user_kp &user_kp &user_kp
+                &user_kp &user_kp &user_kp &user_kp &user_kp
+            >;
+        };
     };
 
     /*
@@ -224,6 +268,9 @@
         bri_combo {
             timeout-ms = <80>;
             require-prior-idle-ms = <200>;
+            /* Default layer only: pure mode lives on layer 1 and must not have
+             * any of these even as a candidate. See the header note. */
+            layers = <0>;
             key-positions = <0 4>;
             bindings = <&bri_dual>;
         };
@@ -232,6 +279,9 @@
         hue_combo {
             timeout-ms = <80>;
             require-prior-idle-ms = <200>;
+            /* Default layer only: pure mode lives on layer 1 and must not have
+             * any of these even as a candidate. See the header note. */
+            layers = <0>;
             key-positions = <5 9>;
             bindings = <&hue_dual>;
         };
@@ -262,6 +312,9 @@
         eff_next_combo {
             timeout-ms = <80>;
             require-prior-idle-ms = <200>;
+            /* Default layer only: pure mode lives on layer 1 and must not have
+             * any of these even as a candidate. See the header note. */
+            layers = <0>;
             key-positions = <0 10>;
             bindings = <&effect_cycle>;
         };
@@ -275,6 +328,9 @@
         dfu_combo {
             timeout-ms = <80>;
             require-prior-idle-ms = <200>;
+            /* Default layer only: pure mode lives on layer 1 and must not have
+             * any of these even as a candidate. See the header note. */
+            layers = <0>;
             key-positions = <4 10>;
             bindings = <&dfu_combo>;
         };
@@ -296,6 +352,9 @@
         bt_clr_combo {
             timeout-ms = <80>;
             require-prior-idle-ms = <200>;
+            /* Default layer only: pure mode lives on layer 1 and must not have
+             * any of these even as a candidate. See the header note. */
+            layers = <0>;
             key-positions = <3 13>;
             bindings = <&bt_clear>;
         };
@@ -327,6 +386,9 @@
         out_combo {
             timeout-ms = <80>;
             require-prior-idle-ms = <200>;
+            /* Default layer only: pure mode lives on layer 1 and must not have
+             * any of these even as a candidate. See the header note. */
+            layers = <0>;
             key-positions = <2 7>;
             /* NOT the stock &out OUT_TOG: that cannot be made inert during playback,
              * and I and K are two of the keys a score legitimately asks for. Flipping

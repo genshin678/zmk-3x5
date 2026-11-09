@@ -23,6 +23,7 @@
 #include <drivers/behavior.h>
 #include <zmk/endpoints.h>
 #include <zmk_rgbeffect/mode_c.h>
+#include <zmk_rgbeffect/pure_mode.h>
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
 
@@ -30,7 +31,7 @@ static int on_pressed(struct zmk_behavior_binding *binding,
                       struct zmk_behavior_binding_event event) {
     ARG_UNUSED(binding);
     ARG_UNUSED(event);
-    if (mode_c_is_active()) {
+    if (mode_c_is_active() || pure_mode_is_active()) {
         LOG_INF("out_guard: ignored, a score is playing");
         return 0;
     }

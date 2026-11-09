@@ -153,7 +153,7 @@ static const struct led_rgb CUE_GREEN = { .r = 0,   .g = 255, .b = 0   };
  * attempt at this did. A volatile pointer forces a real load, hence a relocation, hence
  * a section the linker has to keep; __attribute__((used)) is belt and braces. */
 static const uint8_t mc_build_tag[] __attribute__((used)) =
-    "MCV12/TABLECACHE+BREATH3S+USBFIX+CUEFIX+FASTCUE+KEYMAP+RGBWEB";
+    "MCV13/TABLECACHE+BREATH3S+USBFIX+CUEFIX+FASTCUE+KEYMAP+RGBWEB+PUREMODE";
 static const uint8_t *volatile mc_build_tag_probe = mc_build_tag;
 static volatile uint8_t mc_build_tag_sink;
 

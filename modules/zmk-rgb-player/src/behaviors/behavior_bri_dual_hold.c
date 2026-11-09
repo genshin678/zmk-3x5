@@ -26,6 +26,7 @@
 #include <zephyr/logging/log.h>
 #include <drivers/behavior.h>
 #include <zmk_rgbeffect/mode_c.h>
+#include <zmk_rgbeffect/pure_mode.h>
 #include <zmk_rgbeffect/rgb_control.h>
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
@@ -35,7 +36,7 @@ static struct k_work_delayable bri_hold_work;
 
 static void fire_loop(struct k_work *w) {
     ARG_UNUSED(w);
-    if (!combo_held) {
+    if (!combo_held || pure_mode_is_active()) {
         return;
     }
     /* Combo confirmed held: start the brightness loop (upwards). */
@@ -48,7 +49,7 @@ static int on_pressed(struct zmk_behavior_binding *binding,
     ARG_UNUSED(event);
     /* Locked out while a score is playing: the strip and the cue belong to Mode C
      * until the user stops. See behavior_effect_cycle.c for the full reasoning. */
-    if (mode_c_is_active()) {
+    if (mode_c_is_active() || pure_mode_is_active()) {
         return 0;
     }
     combo_held = true;

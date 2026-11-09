@@ -10,6 +10,7 @@ target_sources(app PRIVATE
     src/dfu.c
     src/cdc.c
     src/mode_c.c
+    src/pure_mode.c
     src/bringup.c
     src/module_init.c
     src/user_keymap.c

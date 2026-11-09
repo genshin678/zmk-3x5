@@ -9,6 +9,7 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/led_strip.h>
 #include <zephyr/logging/log.h>
+#include <string.h>
 #include <zmk_rgbeffect/led_pixel.h>
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
@@ -17,6 +18,13 @@ static const struct device *strip;
 static struct led_rgb frame[LED_PIXEL_COUNT];
 static bool initialized;
 static K_MUTEX_DEFINE(led_mutex);
+
+/* One-pixel override, see led_pixel.h. `frame` stays the renderer's buffer;
+ * the override is stamped into `shadow` for the duration of one push, so the
+ * colour underneath comes back by itself as soon as the override is dropped. */
+static volatile int8_t override_idx = -1;
+static uint8_t override_r, override_g, override_b;
+static struct led_rgb shadow[LED_PIXEL_COUNT];
 
 int led_pixel_init(void) {
     strip = DEVICE_DT_GET(DT_CHOSEN(zmk_led_strip));
@@ -44,11 +52,41 @@ void led_pixel_clear(void) {
 void led_pixel_update(void) {
     if (!initialized) return;
     k_mutex_lock(&led_mutex, K_FOREVER);
-    int rc = led_strip_update_rgb(strip, frame, LED_PIXEL_COUNT);
+
+    const int8_t ov = override_idx;
+    const struct led_rgb *src = frame;
+    if (ov >= 0 && ov < LED_PIXEL_COUNT) {
+        memcpy(shadow, frame, sizeof(shadow));
+        shadow[ov].r = override_r;
+        shadow[ov].g = override_g;
+        shadow[ov].b = override_b;
+        src = shadow;
+    }
+
+    int rc = led_strip_update_rgb(strip, src, LED_PIXEL_COUNT);
     k_mutex_unlock(&led_mutex);
     if (rc < 0) {
         LOG_WRN("led_strip_update_rgb failed: %d", rc);
     }
+}
+
+void led_pixel_set_override(uint8_t idx, uint8_t r, uint8_t g, uint8_t b) {
+    if (idx >= LED_PIXEL_COUNT) {
+        override_idx = -1;
+        return;
+    }
+    override_r = r;
+    override_g = g;
+    override_b = b;
+    override_idx = (int8_t)idx;
+}
+
+void led_pixel_clear_override(void) {
+    override_idx = -1;
+}
+
+bool led_pixel_override_active(void) {
+    return override_idx >= 0;
 }
 
 void led_pixel_set_and_update(uint8_t idx, uint8_t r, uint8_t g, uint8_t b) {

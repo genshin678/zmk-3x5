@@ -78,6 +78,7 @@
 #include <zephyr/bluetooth/bluetooth.h>
 #include <drivers/behavior.h>
 #include <zmk_rgbeffect/mode_c.h>
+#include <zmk_rgbeffect/pure_mode.h>
 #include <zmk/ble.h>
 
 LOG_MODULE_DECLARE(zmk_rgbeffect, CONFIG_ZMK_RGB_PLAYER_LOG_LEVEL);
@@ -109,7 +110,7 @@ static int on_pressed(struct zmk_behavior_binding *binding,
                       struct zmk_behavior_binding_event event) {
     /* Locked out while a score is playing: the strip and the cue belong to Mode C
      * until the user stops. See behavior_effect_cycle.c for the full reasoning. */
-    if (mode_c_is_active()) {
+    if (mode_c_is_active() || pure_mode_is_active()) {
         return 0;
     }
 

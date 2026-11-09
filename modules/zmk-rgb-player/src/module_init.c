@@ -13,6 +13,7 @@
 #include <zmk_rgbeffect/player.h>
 #include <zmk_rgbeffect/ble_service.h>
 #include <zmk_rgbeffect/mode_c.h>
+#include <zmk_rgbeffect/pure_mode.h>
 #include <zmk_rgbeffect/cdc.h>
 #include <zmk_rgbeffect/bringup.h>
 
@@ -24,6 +25,9 @@ static int zmk_rgbeffect_init(void) {
     player_init();
     ble_service_init();
     mode_c_init();
+    /* Pure play mode: gesture detection + the K blink work. Must be initialised
+     * before any key can arrive, hence before the effect is applied below. */
+    pure_mode_init();
     /* PC over USB. Ordering does not matter here, but it has to be called: the
      * previous cdc.c was never wired in at all, which is why a plugged in board
      * accepted nothing but keystrokes. */
